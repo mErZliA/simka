@@ -30,7 +30,7 @@ window.BANNERS = [
   },
   {
     // 2) ПРОМОКОД NEW -> раздел «Купоны»
-    img: "/static/img/banner2-wide.jpg",
+    img: "/static/img/banner2-complete.jpg",
     ic: "🎟️",
     tt: "Промокод NEW",
     ds: "Активируй код и получи награду",
@@ -39,7 +39,7 @@ window.BANNERS = [
   },
   {
     // 3) SIM ROULETTE
-    img: "/static/img/banner3-wide.jpg",
+    img: "/static/img/banner3-complete.jpg",
     ic: "🎰",
     tt: "SIM Roulette",
     ds: "Крути рулетку и собирай номера",
