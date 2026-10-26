@@ -25,7 +25,7 @@ window.BANNERS = [
     ic: "👥",
     tt: "Реферальная система",
     ds: "Приглашай друзей в игру",
-    cta: "Открыть",
+    cta: "",
     act: function () { openPanel("friends"); },
   },
   {
