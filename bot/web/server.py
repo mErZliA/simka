@@ -23,6 +23,7 @@ import bot.game as game
 import bot.fx as fx
 from bot.config import APP_ENV, ADMIN_IDS, BOT_TOKEN, CHANNEL, DEV_MODE, PORT, WEBAPP_DIR, WEBAPP_URL
 from bot.utils.security import verify_init_data
+from bot.utils.subscription import check_subscription
 from bot.utils.notify import notify_maintenance
 
 log = logging.getLogger("simroulette.web")
@@ -187,6 +188,43 @@ def viewer_of(request: web.Request, payload: dict) -> tuple[int | None, bool]:
     """(uid, is_admin) для произвольного запроса, в т.ч. неавторизованного."""
     uid = auth_uid(request, payload)
     return uid, viewer_is_admin(uid)
+
+
+SUBSCRIPTION_EXEMPT_PATHS = {
+    "/api/health", "/api/auth", "/api/subscription/check",
+}
+
+
+def _subscription_required_response() -> web.Response:
+    return web.json_response({
+        "ok": False,
+        "error": "subscription_required",
+        "channel": CHANNEL,
+        "channel_url": CH_URL,
+    }, status=403)
+
+
+async def channel_access_allowed(user_id: int, *, force_check: bool = False) -> bool:
+    """Разработка и админы не блокируются; игрокам требуется членство в канале."""
+    if DEV_MODE or viewer_is_admin(user_id):
+        return True
+    return await check_subscription(user_id, force=force_check)
+
+
+@web.middleware
+async def subscription_middleware(request: web.Request, handler):
+    """Закрывает весь игровой API для неподписанных пользователей."""
+    path = request.path
+    if not path.startswith("/api/") or path in SUBSCRIPTION_EXEMPT_PATHS:
+        return await handler(request)
+
+    payload = {**dict(request.query), **(await read_json(request))}
+    uid = auth_uid(request, payload)
+    if uid is None:
+        return web.json_response({"ok": False, "error": "bad_init"}, status=403)
+    if not await channel_access_allowed(uid):
+        return _subscription_required_response()
+    return await handler(request)
 
 
 def _msk_hhmm_ms(value: str) -> int:
@@ -412,11 +450,23 @@ async def api_health(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "maintenance": maintenance_state()})
 
 
+async def api_subscription_check(request: web.Request) -> web.Response:
+    payload = await read_json(request)
+    uid = auth_uid(request, payload)
+    if uid is None:
+        return web.json_response({"ok": False, "error": "bad_init"}, status=403)
+    subscribed = await channel_access_allowed(uid, force_check=True)
+    return web.json_response({"ok": True, "subscribed": subscribed,
+                              "channel": CHANNEL, "channel_url": CH_URL})
+
+
 async def api_auth(request: web.Request) -> web.Response:
     payload = await read_json(request)
     uid = auth_uid(request, payload)
     if uid is None:
         return web.json_response({"ok": False, "error": "bad_init"}, status=403)
+    if not await channel_access_allowed(uid):
+        return _subscription_required_response()
     profile = payload.get("profile") or {}
     p = ensure_player(uid, profile)
     fx_updated = None
@@ -1695,7 +1745,7 @@ async def index(request: web.Request) -> web.Response:
 async def start_server() -> web.AppRunner:
     db.connect()
     app = web.Application(client_max_size=2 * 1024 * 1024,
-                          middlewares=[request_error_middleware])
+                          middlewares=[request_error_middleware, subscription_middleware])
     if APP_ENV == "production":
         app.on_startup.append(_backup_start)
         app.on_cleanup.append(_backup_stop)
@@ -1703,6 +1753,7 @@ async def start_server() -> web.AppRunner:
     # базовые
     app.router.add_get("/api/health", api_health)
     app.router.add_post("/api/auth", api_auth)
+    app.router.add_post("/api/subscription/check", api_subscription_check)
     app.router.add_route("*", "/api/state", api_state)
     app.router.add_post("/api/import", api_import)
 

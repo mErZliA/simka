@@ -252,6 +252,80 @@ class CurrencyAPITests(unittest.IsolatedAsyncioTestCase):
                 db.DB_PATH = old_path
 
 
+class SubscriptionGateTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unsubscribed_player_is_blocked_before_game_api(self):
+        class Request:
+            path = "/api/spin"
+            query = {}
+            async def json(self):
+                return {"initData": "signed-init-data"}
+
+        handler_called = False
+        async def handler(_request):
+            nonlocal handler_called
+            handler_called = True
+            return server.web.json_response({"ok": True})
+
+        with patch.object(server, "auth_uid", return_value=77101), \
+             patch.object(server, "channel_access_allowed", new=AsyncMock(return_value=False)):
+            response = await server.subscription_middleware(Request(), handler)
+        self.assertEqual(response.status, 403)
+        self.assertEqual(json.loads(response.text)["error"], "subscription_required")
+        self.assertFalse(handler_called)
+
+    async def test_subscribed_player_reaches_game_api(self):
+        class Request:
+            path = "/api/spin"
+            query = {}
+            async def json(self):
+                return {"initData": "signed-init-data"}
+
+        async def handler(_request):
+            return server.web.json_response({"ok": True})
+
+        with patch.object(server, "auth_uid", return_value=77102), \
+             patch.object(server, "channel_access_allowed", new=AsyncMock(return_value=True)):
+            response = await server.subscription_middleware(Request(), handler)
+        self.assertEqual(response.status, 200)
+        self.assertTrue(json.loads(response.text)["ok"])
+
+    async def test_subscription_button_forces_fresh_channel_check(self):
+        class Request:
+            async def json(self):
+                return {"initData": "signed-init-data"}
+
+        checker = AsyncMock(return_value=True)
+        with patch.object(server, "auth_uid", return_value=77104), \
+             patch.object(server, "channel_access_allowed", new=checker):
+            response = await server.api_subscription_check(Request())
+        self.assertEqual(response.status, 200)
+        self.assertTrue(json.loads(response.text)["subscribed"])
+        checker.assert_awaited_once_with(77104, force_check=True)
+
+    async def test_auth_does_not_create_player_before_subscription(self):
+        with tempfile.TemporaryDirectory() as temp:
+            old_path, old_conn = db.DB_PATH, db._conn
+            db.DB_PATH, db._conn = Path(temp) / "subscription.sqlite3", None
+            uid = 77103
+
+            class Request:
+                async def json(self):
+                    return {"initData": "signed-init-data"}
+
+            try:
+                with patch.object(server, "auth_uid", return_value=uid), \
+                     patch.object(server, "channel_access_allowed", new=AsyncMock(return_value=False)):
+                    response = await server.api_auth(Request())
+                self.assertEqual(response.status, 403)
+                self.assertEqual(json.loads(response.text)["error"], "subscription_required")
+                self.assertIsNone(db.get_player(uid))
+            finally:
+                if db._conn:
+                    db._conn.close()
+                db._conn = old_conn
+                db.DB_PATH = old_path
+
+
 class BackupTests(unittest.TestCase):
     def test_sqlite_backup_is_integrity_checked_and_restorable(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -55,6 +55,8 @@ check("health", st == 200 and d.get("ok"))
 print("== auth ==")
 st, d = call("POST", "/api/auth", {"uid": UID, "profile": {"first_name": "Тестер", "username": "tester"}})
 check("auth", st == 200 and d.get("ok"), f"-> admin={d.get('player',{}).get('is_admin')}")
+st, sub = call("POST", "/api/subscription/check", {"uid": UID})
+check("admin subscription bypass", st == 200 and sub.get("subscribed") is True)
 
 st, d2 = call("POST", "/api/auth", {})
 check("auth reject без uid", st == 403)
@@ -216,7 +218,7 @@ st, d = call("POST", "/api/settings", {"uid": UID, "sound_on": False, "vibration
 check("settings", st == 200, f"sound={d.get('settings',{}).get('sound_on')} thm={d.get('settings',{}).get('spin_theme')}")
 
 print("== рейтинг ==")
-st, d = call("GET", "/api/rating")
+st, d = call("GET", f"/api/rating?uid={UID}")
 admin_in_rating = any(row.get("user_id") == UID for row in d.get("money", []) + d.get("numbers", []))
 check("рейтинги исключают администраторов", st == 200 and not admin_in_rating,
       f"money={len(d.get('money', []))} numbers={len(d.get('numbers', []))}")

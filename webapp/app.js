@@ -144,6 +144,7 @@ async function api(path, method, body){
   let data={};
   try{ data=await res.json(); }catch(e){}
   if(!res.ok && res.status!==409){
+    if(data.error==="subscription_required"&&path!=="/api/auth") renderSubscriptionGate(data);
     const err=new Error(data.error||("HTTP "+res.status)); err.data=data; err.status=res.status; throw err;
   }
   const selfResponse=!data.user_id||!S.player||Number(data.user_id)===Number(S.player.user_id);
@@ -217,6 +218,46 @@ function applyTheme(name){
 }
 
 /* ---------------------------------------------------------- BOOT */
+function renderSubscriptionGate(info={}){
+  $("app").classList.add("hide");
+  $("boot").classList.remove("hide");
+  $("boot").classList.add("subscription-mode");
+  const channel=info.channel||"@sim_roulette";
+  const channelUrl=info.channel_url||"https://t.me/sim_roulette";
+  $("boot").innerHTML=`<div class="bootLogo">SIM ROULETTE</div>
+    <section id="subscriptionGate">
+      <div class="subGateIcon">📣</div>
+      <h1>Подпишись на канал</h1>
+      <p>Чтобы пользоваться мини-приложением, подпишись на новостной канал <b>${esc(channel)}</b>.</p>
+      <a class="btn ghost" id="subscriptionChannel" href="${esc(channelUrl)}" target="_blank" rel="noopener">📢 Открыть канал</a>
+      <button class="btn good" id="subscriptionCheck">✅ Подписался!</button>
+      <div id="subscriptionStatus" role="status">После подписки нажми «Подписался!»</div>
+    </section>`;
+  const link=$("subscriptionChannel");
+  link.onclick=(event)=>{
+    if(TG&&typeof TG.openTelegramLink==="function"){
+      event.preventDefault(); TG.openTelegramLink(channelUrl);
+    }
+  };
+  $("subscriptionCheck").onclick=async()=>{
+    const button=$("subscriptionCheck"), status=$("subscriptionStatus");
+    button.disabled=true; status.textContent="Проверяем подписку…";
+    try{
+      const result=await api("/api/subscription/check","POST",{});
+      if(result.subscribed){
+        status.textContent="Подписка подтверждена — загружаем игру…";
+        setTimeout(()=>location.reload(),350);
+      }else{
+        status.textContent="Подписку пока не видим. Подпишись на канал и попробуй ещё раз.";
+      }
+    }catch(e){
+      status.textContent="Не удалось проверить подписку. Проверь соединение и попробуй ещё раз.";
+    }finally{
+      if($("subscriptionCheck")) $("subscriptionCheck").disabled=false;
+    }
+  };
+}
+
 async function boot(){
   // Telegram окружение — только если есть реальный initData
   if(TG && TG.initData){
@@ -228,6 +269,10 @@ async function boot(){
   try{
     auth=await api("/api/auth","POST",{});
   }catch(e){
+    if(e.data&&e.data.error==="subscription_required"){
+      renderSubscriptionGate(e.data);
+      return;
+    }
     $("boot").innerHTML='<div class="empty"><div class="ic">⚠️</div>Сервер недоступен.<br>Попробуй позже.</div>';
     return;
   }

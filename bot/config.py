@@ -9,7 +9,9 @@ API_HASH   = os.getenv("API_HASH", "")
 BOT_TOKEN  = os.getenv("BOT_TOKEN", "")
 
 # ---------- Игра ----------
-CHANNEL    = os.getenv("CHANNEL", "@simroulette_news")
+CHANNEL    = os.getenv("CHANNEL", "@sim_roulette").strip() or "@sim_roulette"
+if CHANNEL == "@simroulette_news":  # migrate the former default channel
+    CHANNEL = "@sim_roulette"
 WEBAPP_URL = os.getenv("WEBAPP_URL", "https://example.com/")
 WEBAPP_DIR = os.getenv("WEBAPP_DIR", "./webapp")
 PORT       = int(os.getenv("PORT", "8080"))
