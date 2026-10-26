@@ -21,7 +21,7 @@
 window.BANNERS = [
   {
     // 1) БЫСТРЫЕ ВЫПЛАТЫ
-    img: "/static/img/banner1-wide.jpg",
+    img: "/static/img/banner1-payout.jpg",
     ic: "💰",
     tt: "Быстрые выплаты",
     ds: "Надёжно · Удобно · Выгодно",
