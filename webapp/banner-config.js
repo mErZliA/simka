@@ -21,7 +21,7 @@
 window.BANNERS = [
   {
     // 1) БЫСТРЫЕ ВЫПЛАТЫ
-    img: "/static/img/banner1.jpg",
+    img: "/static/img/banner1-wide.jpg",
     ic: "💰",
     tt: "Быстрые выплаты",
     ds: "Надёжно · Удобно · Выгодно",
@@ -30,7 +30,7 @@ window.BANNERS = [
   },
   {
     // 2) ПРОМОКОД NEW -> раздел «Купоны»
-    img: "/static/img/banner2.jpg",
+    img: "/static/img/banner2-wide.jpg",
     ic: "🎟️",
     tt: "Промокод NEW",
     ds: "Активируй код и получи награду",
@@ -39,7 +39,7 @@ window.BANNERS = [
   },
   {
     // 3) SIM ROULETTE
-    img: "/static/img/banner3.jpg",
+    img: "/static/img/banner3-wide.jpg",
     ic: "🎰",
     tt: "SIM Roulette",
     ds: "Крути рулетку и собирай номера",

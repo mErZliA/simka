@@ -104,18 +104,19 @@ input,select{font-family:inherit}
   animation:fadeUp .3s ease}
 
 /* ---------- баннеры ---------- */
-#banners{margin:8px auto 4px;width:calc(100% - 24px);max-width:460px;position:relative;z-index:5}
-#bannerTrack{display:flex;overflow:hidden;border-radius:var(--radius);border:1px solid var(--stroke);
-  background:var(--glass);height:62px;position:relative;box-shadow:var(--shadow)}
-.bn{flex:0 0 100%;min-width:100%;padding:12px 14px;display:flex;align-items:center;gap:12px;
+#banners{margin:10px auto 6px;width:calc(100% - 24px);max-width:460px;position:relative;z-index:5}
+#bannerTrack{display:flex;overflow:hidden;border-radius:18px;border:1px solid rgba(143,177,255,.24);
+  background:#070d1d;height:68px;position:relative;
+  box-shadow:0 12px 28px rgba(0,0,0,.3),inset 0 1px 0 rgba(255,255,255,.08)}
+.bn{flex:0 0 100%;min-width:100%;padding:12px 16px;display:flex;align-items:center;gap:12px;
   transition:transform .5s cubic-bezier(.3,.8,.3,1);position:relative;overflow:hidden}
-.bn .bnImg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:0}
+.bn .bnImg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;z-index:0}
 .bn .bnScrim{position:absolute;inset:0;z-index:1;
-  background:linear-gradient(90deg,rgba(6,10,22,.88) 0%,rgba(6,10,22,.5) 55%,rgba(6,10,22,.18) 100%)}
+  background:linear-gradient(90deg,rgba(5,9,20,.42) 0%,rgba(5,9,20,.22) 48%,rgba(5,9,20,.04) 100%)}
 .bn .ico{font-size:27px;position:relative;z-index:2}
-.bn .txt{position:relative;z-index:2;min-width:0}
-.bn .tt{font-weight:800;font-size:14px}
-.bn .ds{font-size:11px;color:#cbd8ff;margin-top:2px;opacity:.85}
+.bn .txt{position:relative;z-index:2;min-width:0;text-shadow:0 2px 10px rgba(0,0,0,.7)}
+.bn .tt{font-weight:850;font-size:15px;letter-spacing:.01em;color:#fff}
+.bn .ds{font-size:11px;color:#d6e2ff;margin-top:3px;opacity:.92}
 .bn .cta{margin-left:auto;position:relative;z-index:2;flex:0 0 auto;
   background:linear-gradient(90deg,var(--acc),var(--acc2));color:#fff;padding:8px 14px;
   border-radius:20px;font-weight:800;font-size:12px;box-shadow:0 6px 18px rgba(77,163,255,.35)}
