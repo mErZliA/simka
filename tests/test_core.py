@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import sqlite3
 import tempfile
 import time
@@ -16,6 +17,32 @@ from bot import db, game
 from bot.backup import create_backup
 from bot.utils import security
 from bot.web import server
+
+
+class NumberFormattingTests(unittest.TestCase):
+    def test_all_country_formats_preserve_every_generated_digit(self):
+        for country in game.COUNTRIES:
+            with self.subTest(country=country["k"]):
+                digits = [(i + 1) % 10 for i in range(country["L"])]
+                formatted = game.format_number(country, digits)
+                actual = re.sub(r"\D", "", formatted)
+                expected = re.sub(r"\D", "", country["code"]) + "".join(map(str, digits))
+                self.assertEqual(actual, expected)
+                self.assertEqual(len(actual), len(expected))
+
+                item = game.gen_unique_number(country, "test", game.R_BY_ID["common"], [])
+                self.assertEqual(
+                    len(re.sub(r"\D", "", item["num"])),
+                    len(re.sub(r"\D", "", country["code"])) + country["L"],
+                )
+
+    def test_russian_and_kazakh_numbers_have_eleven_digits_including_country_code(self):
+        for country_id in ("RU", "KZ"):
+            with self.subTest(country=country_id):
+                country = game.C_BY_ID[country_id]
+                number = game.format_number(country, [1, 2, 3, 4, 5, 6, 7, 8, 9, 0])
+                self.assertEqual(re.sub(r"\D", "", number), "7" + "1234567890")
+                self.assertEqual(len(re.sub(r"\D", "", number)), 11)
 
 
 class UpgradeRuleTests(unittest.TestCase):

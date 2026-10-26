@@ -1,5 +1,6 @@
 """Smoke-тест нового API SIM Roulette."""
 import json
+import re
 import sys
 import time
 import urllib.request
@@ -79,6 +80,9 @@ check("инвентарь после импорта", len(d.get("inventory", [])
 print("== спин x1 + решение ==")
 st, d = call("POST", "/api/spin", {"uid": UID, "country": "RU", "count": 1})
 check("spin x1", st == 200 and len(d.get("items", [])) == 1, f"item={d.get('items',[{}])[0].get('num')} r={d.get('items',[{}])[0].get('r')}")
+spin_num = d.get("items", [{}])[0].get("num", "")
+check("российский спин содержит 11 цифр с кодом +7",
+      len(re.sub(r"\D", "", spin_num)) == 11, spin_num)
 item = (d.get("items") or [{}])[0]
 st, d = call("POST", "/api/decide", {"uid": UID, "action": "keep"})
 check("keep", st == 200, f"earned={d.get('earned')}")
