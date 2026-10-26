@@ -20,13 +20,13 @@
 
 window.BANNERS = [
   {
-    // 1) БЫСТРЫЕ ВЫПЛАТЫ
-    img: "/static/img/banner1-payout.jpg",
-    ic: "💰",
-    tt: "Быстрые выплаты",
-    ds: "Надёжно · Удобно · Выгодно",
-    cta: "",
-    act: null,
+    // 1) РЕФЕРАЛЬНАЯ СИСТЕМА -> раздел «Друзья»
+    img: "/static/img/banner1-referral.jpg",
+    ic: "👥",
+    tt: "Реферальная система",
+    ds: "Приглашай друзей в игру",
+    cta: "Открыть",
+    act: function () { openPanel("friends"); },
   },
   {
     // 2) ПРОМОКОД NEW -> раздел «Купоны»
