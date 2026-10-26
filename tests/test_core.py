@@ -326,6 +326,44 @@ class SubscriptionGateTests(unittest.IsolatedAsyncioTestCase):
                 db.DB_PATH = old_path
 
 
+class UpgradeAPITests(unittest.IsolatedAsyncioTestCase):
+    async def test_upgrade_is_free_even_when_player_has_no_balance(self):
+        with tempfile.TemporaryDirectory() as temp:
+            old_path, old_conn = db.DB_PATH, db._conn
+            db.DB_PATH, db._conn = Path(temp) / "free-upgrade.sqlite3", None
+            uid = 88201
+            item = {"id": "free-upgrade-number", "num": "+7 (900) 123-45-67",
+                    "k": "RU", "r": "common", "p": 100, "op": "mts"}
+            try:
+                db.create_player(uid)
+                db.wallets_initialize(uid, is_new_player=False, legacy_balance=100)
+                db.touch_player(uid, balance=0)
+                db.add_number(uid, item)
+                player = db.player_dict(db.get_player(uid))
+
+                class Request:
+                    async def json(self):
+                        return {"number_id": item["id"], "chance": 45}
+
+                with patch.object(server, "_load_profile", return_value=(uid, player)), \
+                     patch.object(server, "maintenance_guard", return_value=None), \
+                     patch.object(game, "upgrade_result", return_value=(False, None)), \
+                     patch.object(game, "wheel_landing", return_value=200):
+                    response = await server.api_upgrade(Request())
+
+                data = json.loads(response.text)
+                self.assertEqual(response.status, 200)
+                self.assertEqual(db.get_player(uid)["balance"], 0)
+                self.assertTrue(all(amount == 0 for amount in db.wallets_get(uid).values()))
+                self.assertEqual(data["balance"], 0)
+                self.assertNotIn("cost", data)
+            finally:
+                if db._conn:
+                    db._conn.close()
+                db._conn = old_conn
+                db.DB_PATH = old_path
+
+
 class BackupTests(unittest.TestCase):
     def test_sqlite_backup_is_integrity_checked_and_restorable(self):
         with tempfile.TemporaryDirectory() as temp:

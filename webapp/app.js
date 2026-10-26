@@ -919,7 +919,6 @@ function openUpgrade(id){
   const rar=R_BY_ID[n.r];
   const wmin=(S.limits&&S.limits.wheel_min)||5;
   const wmax=(S.limits&&S.limits.wheel_max)||90;
-  const base=(S.limits&&S.limits.spin_x)||20;
   const stepsFor=ch=>{
     const bands=(S.limits&&S.limits.wheel_steps)||[
       {max_chance:10,steps:4},{max_chance:25,steps:3},
@@ -927,7 +926,6 @@ function openUpgrade(id){
     ];
     return (bands.find(b=>ch<=b.max_chance)||bands[bands.length-1]).steps;
   };
-  const costFor=(ch,st)=>Math.round(base*st*(1+ch/50)*(1+R_IDX(n.r)*0.2)*100)/100;
   let chance=45, spinning=false;
 
   const presets=[10,25,45,70,90].filter(x=>x>=wmin&&x<=wmax);
@@ -950,7 +948,7 @@ function openUpgrade(id){
     <div class="upStatRow">
       <div><span>Сектор победы</span><b id="upChanceVal">45%</b></div>
       <div><span>При успехе</span><b id="upStepsVal">+2 кат.</b></div>
-      <div><span>Стоимость</span><b id="upCostVal">—</b></div>
+      <div><span>Стоимость</span><b>Бесплатно</b></div>
     </div>
 
     <div class="field"><label>Процентная ставка: <span id="upSliderVal">45%</span></label>
@@ -977,16 +975,11 @@ function openUpgrade(id){
     place(winLbl,edge/2); place(loseLbl,(edge+360)/2);
     $("upChanceVal").textContent=`${ch}%`;
     $("upStepsVal").textContent=`+${stepsFor(ch)} кат.`;
-    $("upCostVal").textContent=nativePrice(costFor(ch,stepsFor(ch))*BASE(n.k),n.k);
     $("upSliderVal").textContent=`${ch}%`;
     $("upChance").value=ch;
     $("upPresets").querySelectorAll("button").forEach(b=>b.classList.toggle("on",+b.dataset.v===ch));
-    const itemCountry=C_BY_ID[n.k]||CTRY[0];
-    const wallet=(S.player.wallets&&S.player.wallets[itemCountry.code])||0;
-    const available=wallet+(S.player.donate_balance||0)*itemCountry.b;
-    const need=costFor(ch,stepsFor(ch))*itemCountry.b;
-    $("upGo").disabled=available<need;
-    $("upGo").textContent=available<need?"💸 Недостаточно средств":"🎡 КРУТИТЬ КОЛЕСО";
+    $("upGo").disabled=spinning;
+    $("upGo").textContent="🎡 КРУТИТЬ КОЛЕСО";
   }
   draw(45);
   $("upChance").oninput=e=>draw(+e.target.value);
@@ -1002,8 +995,7 @@ function openUpgrade(id){
       r=await api("/api/upgrade","POST",{number_id:id,chance});
     }catch(e){
       spinning=false; $("upChance").disabled=false; draw(chance);
-      if(e.data&&e.data.error==="no_funds") toast("💸 Недостаточно средств");
-      else if(e.data&&e.data.error==="maintenance") toast("🔧 Идёт техперерыв");
+      if(e.data&&e.data.error==="maintenance") toast("🔧 Идёт техперерыв");
       else toast("Ошибка: "+(e.data&&e.data.error||e.message));
       return;
     }
@@ -1034,7 +1026,7 @@ async function showWheelResult(r,n){
           <div class="price">${priceOf(r.item.p,r.item.k)}</div>
         </div>
       </div>
-      <div class="upResultNote">+${r.steps} категории · шанс был ${r.chance}% · стоимость ${nativePrice(r.cost_native||r.cost*BASE(n.k),n.k)}</div>
+      <div class="upResultNote">+${r.steps} категории · шанс был ${r.chance}% · бесплатно</div>
       <button class="btn good" id="upOk" style="width:100%;margin-top:14px;padding:14px">Отлично!</button>`);
   }else{
     beep(180,.35,"sawtooth",.07); buzz([90,60,90]);

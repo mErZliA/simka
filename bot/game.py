@@ -377,13 +377,6 @@ def upgrade_steps(chance: int) -> int:
                 if chance <= band["max_chance"])
 
 
-def upgrade_cost(chance: int, steps: int, rarity_id: str = "common") -> float:
-    """Апгрейд теперь стоит денег: безопасная ставка дороже рискованной."""
-    chance = clamp_chance(chance)
-    idx = R_INDEX.get(rarity_id, 0)
-    return round(SPIN_X * steps * (1 + chance / 50) * (1 + idx * 0.2), 2)
-
-
 def wheel_landing(chance: int, win: bool) -> float:
     """Угла stop-позиции стрелки (градусы от верха по часовой).
 

@@ -135,11 +135,13 @@ check("sell", st == 200, f"earned={d.get('earned')}")
 print("== апгрейд ==")
 st, d = call("GET", f"/api/state?uid={UID}")
 inv = d.get("inventory", [])
-upgrade_currency = {"RU": "RUB", "US": "USD", "DE": "EUR", "GB": "GBP",
-                    "CN": "CNY", "JP": "JPY", "KZ": "KZT", "TR": "TRY"}.get(inv[0]["k"], "RUB")
-_db.wallet_apply_deltas(UID, [{"currency": upgrade_currency, "amount": 100000}])
+balance_before_upgrade = _db.get_player(UID)["balance"]
+wallets_before_upgrade = _db.wallets_get(UID)
 st, d = call("POST", "/api/upgrade", {"uid": UID, "number_id": inv[0]["id"], "chance": 45})
-check("upgrade (колесо)", st == 200, f"win={d.get('win')} new={(d.get('item') or {}).get('r')}")
+check("upgrade без списания баланса", st == 200 and d.get("balance") >= balance_before_upgrade,
+      f"win={d.get('win')} new={(d.get('item') or {}).get('r')}")
+check("upgrade не списывает средства кошелька",
+      all(d.get("wallets", {}).get(c, 0) >= v for c, v in wallets_before_upgrade.items()))
 wheel = d.get("wheel") or {}
 edge = 45 / 100 * 360
 landing = wheel.get("landing", -1)

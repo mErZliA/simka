@@ -840,26 +840,8 @@ async def api_upgrade(request: web.Request) -> web.Response:
     if num["r"] == "sec":
         return web.json_response({"ok": False, "error": "max"}, status=400)
 
-    rates, _fx_snapshot = await _wallet_rates(uid)
-    p["balance"] = float(db.get_player(uid)["balance"])
-    balance_before = p["balance"]
-    currency = fx.CURRENCY_BY_COUNTRY.get(num["k"], "RUB")
-    country_cfg = game.C_BY_ID.get(num["k"], game.COUNTRIES[0])
-    cost = game.upgrade_cost(chance, steps, num["r"])
-    cost_native = round(cost * country_cfg["b"], 2)
-    donor_native = min(cost_native, p.get("donate_balance", 0) * 100 * rates[currency])
-    debit_native = round(cost_native - donor_native, 2)
-    if db.wallet_get(uid, currency) + 0.005 < debit_native:
-        return web.json_response({"ok": False, "error": "no_funds", "currency": currency,
-                                  "need": debit_native, "wallet": db.wallet_get(uid, currency)}, status=402)
-
-    # Донат-средства сначала покрывают RUB-эквивалент, остаток списывается
-    # с кошелька валюты номера.
-    donor_used = donor_native / (100 * rates[currency]) if donor_native else 0
-    p["donate_balance"] = round(max(0, p.get("donate_balance", 0) - donor_used), 2)
-    p["balance"] = round(p["balance"] - _wallet_value_units(debit_native, currency, rates), 2)
-    wallet_deltas = ([{"currency": currency, "amount": -debit_native}] if debit_native else [])
-
+    # Апгрейд бесплатный: игрок ставит только номер и процент шанса.
+    # Баланс и кошельки не проверяются и не списываются.
     db.remove_number(number_id)   # при провале номер сгорает
     p["stats"]["upg"] = p["stats"].get("upg", 0) + 1
     _record_task_activity(uid, "upg", 1)
@@ -891,10 +873,8 @@ async def api_upgrade(request: web.Request) -> web.Response:
         push_history(p, {"k": "uplose", "num": num["num"], "chance": chance})
 
     _check_achievements(p)
-    deltas = _wallet_settlement(balance_before, p["balance"], wallet_deltas, rates)
     db.touch_player(uid, xp=p["xp"], stats=p["stats"], history=p["history"],
-                    achievements=p["achievements"], balance=p["balance"],
-                    wallet_deltas=deltas, donate_balance=p["donate_balance"])
+                    achievements=p["achievements"], balance=p["balance"])
     return web.json_response({
         "ok": True,
         "win": win,
@@ -902,10 +882,7 @@ async def api_upgrade(request: web.Request) -> web.Response:
         "old": num,
         "balance": p["balance"],
         "wallets": db.wallets_get(uid),
-        "currency": currency,
-        "cost_native": cost_native,
-        "donate_balance": p["donate_balance"],
-        "cost": cost,
+        "donate_balance": p.get("donate_balance", 0),
         "chance": chance,
         "steps": steps,
         "wheel": {"chance": chance, "win": win, "landing": landing},
