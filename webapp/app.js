@@ -937,12 +937,13 @@ function openUpgrade(id){
     </div>
 
     <div class="upWheelWrap">
-      <div class="upWheel" id="upWheel"></div>
+      <div class="upWheel" id="upWheel">
+        <div class="upSector win" id="upWinLbl"></div>
+        <div class="upSector lose" id="upLoseLbl"></div>
+      </div>
       <div class="upRim"></div>
       <div class="upArrow"></div>
       <div class="upHub">⬆</div>
-      <div class="upSector win" id="upWinLbl"></div>
-      <div class="upSector lose" id="upLoseLbl"></div>
     </div>
 
     <div class="upStatRow">
