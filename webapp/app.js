@@ -20,14 +20,14 @@ const R_BY_ID={}; RAR.forEach((r,i)=>{R_BY_ID[r.id]=r; r.idx=i;});
 const R_IDX=id=>(R_BY_ID[id]?R_BY_ID[id].idx:0);
 
 const CTRY=[
-  {k:"RU",name:"Россия",flag:"🇷🇺",cur:"₽",b:100},
-  {k:"US",name:"США",flag:"🇺🇸",cur:"$",b:1.5},
-  {k:"DE",name:"Германия",flag:"🇩🇪",cur:"€",b:1.5},
-  {k:"GB",name:"Великобритания",flag:"🇬🇧",cur:"£",b:1.2},
-  {k:"CN",name:"Китай",flag:"🇨🇳",cur:"CN¥",b:10},
-  {k:"JP",name:"Япония",flag:"🇯🇵",cur:"JP¥",b:200},
-  {k:"KZ",name:"Казахстан",flag:"🇰🇿",cur:"₸",b:500},
-  {k:"TR",name:"Турция",flag:"🇹🇷",cur:"₺",b:40},
+  {k:"RU",name:"Россия",flag:"🇷🇺",cur:"₽",code:"RUB",b:100},
+  {k:"US",name:"США",flag:"🇺🇸",cur:"$",code:"USD",b:1.5},
+  {k:"DE",name:"Германия",flag:"🇩🇪",cur:"€",code:"EUR",b:1.5},
+  {k:"GB",name:"Великобритания",flag:"🇬🇧",cur:"£",code:"GBP",b:1.2},
+  {k:"CN",name:"Китай",flag:"🇨🇳",cur:"CN¥",code:"CNY",b:10},
+  {k:"JP",name:"Япония",flag:"🇯🇵",cur:"JP¥",code:"JPY",b:200},
+  {k:"KZ",name:"Казахстан",flag:"🇰🇿",cur:"₸",code:"KZT",b:500},
+  {k:"TR",name:"Турция",flag:"🇹🇷",cur:"₺",code:"TRY",b:40},
 ];
 const C_BY_ID={}; CTRY.forEach(c=>C_BY_ID[c.k]=c);
 const FLAG=k=>(C_BY_ID[k]?C_BY_ID[k].flag:"🏳");
@@ -97,6 +97,11 @@ function money(units){
   const c=C_BY_ID[S.country]||CTRY[0];
   return dotSep((Number(units)||0)*c.b)+c.cur;
 }
+function walletMoney(country=S.country){
+  const c=C_BY_ID[country]||CTRY[0];
+  const amount=S.player&&S.player.wallets?S.player.wallets[c.code]:null;
+  return amount==null?money(S.player&&S.player.balance||0):nativePrice(amount,country);
+}
 // Стоимость номера всегда показана в валюте страны номера.
 function priceOf(p,k){ return nativePrice(p,k); }
 // валюта конкретной страны, без пересчёта (для цены в её же деньгах)
@@ -140,6 +145,16 @@ async function api(path, method, body){
   try{ data=await res.json(); }catch(e){}
   if(!res.ok && res.status!==409){
     const err=new Error(data.error||("HTTP "+res.status)); err.data=data; err.status=res.status; throw err;
+  }
+  const selfResponse=!data.user_id||!S.player||Number(data.user_id)===Number(S.player.user_id);
+  if(S.player&&selfResponse&&data.wallets) S.player.wallets=data.wallets;
+  if(S.player&&selfResponse&&Number.isFinite(Number(data.balance))){
+    const prior=Number(S.player.balance)||0, next=Number(data.balance);
+    if(!data.wallets&&Math.abs(next-prior)>=0.005){
+      S.player.wallets=S.player.wallets||{};
+      S.player.wallets.RUB=Math.max(0,(Number(S.player.wallets.RUB)||0)+Math.round((next-prior)*10000)/100);
+    }
+    S.player.balance=next;
   }
   return data;
 }
@@ -365,7 +380,7 @@ function renderHeader(){
   const prog=Math.max(0,Math.min(100,Math.round(((p.xp-S.lvlXp)/span)*100)));
   $("lvl").textContent=`Ур. ${S.level} · ${fmt(p.xp)} XP`;
   // деньги
-  let moneyStr=money(p.balance);
+  let moneyStr=walletMoney(S.country);
   if(p.donate_balance>0) moneyStr+=` + ${money(p.donate_balance)}`;
   $("moneyVal").textContent=moneyStr;
   // аватар
@@ -424,6 +439,7 @@ function renderControls(){
   $("catVal").style.color=S.category?R_BY_ID[S.category].c:"";
   $("multVal").textContent="×"+S.mult;
   $("spinCost").textContent=money(spinCostX(S.category,S.mult));
+  if(S.player) renderHeader();
 }
 
 function setupControls(){
@@ -630,7 +646,7 @@ function showSingleResult(item,r){
     <div class="resPrice">${nativePrice(item.p,item.k)}</div>
     <div class="resCur">номинальная цена · ${esc((C_BY_ID[item.k]||CTRY[0]).name)} · удача ×${r.luck_mult||1}</div>
     <div class="resActs">
-      <button class="btn ghost" id="rSell">Продать +${money(units)}</button>
+      <button class="btn ghost" id="rSell">Продать +${nativePrice(item.p,item.k)}</button>
       <button class="btn good" id="rKeep">Оставить</button>
     </div></div>`);
   if(R_IDX(item.r)>=2){ confetti(); beep(880,.2,"triangle",.08); }
@@ -640,7 +656,7 @@ function showSingleResult(item,r){
   };
   $("rSell").onclick=async()=>{
     const rr=await api("/api/decide","POST",{action:"sell"});
-    closeSheet(); toast(`💰 +${money(rr.earned)}`); S.player.balance=rr.balance; renderHeader(); beep(700,.12);
+    closeSheet(); toast(`💰 +${nativePrice(item.p,item.k)}`); S.player.balance=rr.balance; renderHeader(); beep(700,.12);
   };
 }
 
@@ -738,6 +754,57 @@ function emptyBlock(icon,text){
 
 const RENDER={};
 
+/* --- Обмен валют --- */
+RENDER.currencies=async(body)=>{
+  $("panelTitle").textContent="💱 Обмен валют"; $("panelSearch").classList.add("hide");
+  body.innerHTML='<div class="empty"><div class="ic">⏳</div>Загружаем актуальные курсы…</div>';
+  let data;
+  try{ data=await api("/api/currencies","GET",{}); }
+  catch(e){
+    body.innerHTML=`<div class="empty"><div class="ic">📡</div>Не удалось получить текущие курсы валют.<br><span class="hint">Проверь подключение и попробуй ещё раз.</span><br><button class="btn sm" id="fxRetry">Повторить</button></div>`;
+    const retry=$("fxRetry"); if(retry) retry.onclick=()=>RENDER.currencies(body);
+    return;
+  }
+  S.player.wallets=data.wallets||S.player.wallets||{};
+  if(data.balance!=null) S.player.balance=data.balance;
+  renderHeader();
+  const list=data.currencies||[];
+  const opts=list.map(c=>`<option value="${esc(c.code)}">${esc(c.name)} · ${esc(c.code)}</option>`).join("");
+  const update=()=>{
+    const from=$("fxFrom").value, to=$("fxTo").value;
+    const amount=Number($("fxAmount").value)||0;
+    const rate=(data.rates[to]||0)/(data.rates[from]||1);
+    const output=amount*rate;
+    $("fxQuote").textContent=amount>0?`${amount.toLocaleString("ru-RU",{maximumFractionDigits:2})} ${from} ≈ ${output.toLocaleString("ru-RU",{maximumFractionDigits:2})} ${to}`:"Введите сумму для расчёта";
+    $("fxRate").textContent=`1 ${from} = ${rate.toLocaleString("ru-RU",{maximumFractionDigits:6})} ${to}`;
+    $("fxSubmit").disabled=!(amount>0&&from!==to);
+  };
+  body.innerHTML=`<div class="fx-intro">Курсы валют обновляются автоматически. Обмен без комиссии.</div>
+    <div class="fx-wallets">${list.map(c=>`<div class="fx-wallet"><span class="fx-symbol">${esc(c.symbol)}</span><span class="fx-name">${esc(c.name)}<small>${esc(c.code)}</small></span><b>${Number(data.wallets[c.code]||0).toLocaleString("ru-RU",{minimumFractionDigits:2,maximumFractionDigits:2})}</b></div>`).join("")}</div>
+    <div class="fx-card"><div class="shead">Конвертация</div>
+      <div class="fx-pair"><label>От<select id="fxFrom">${opts}</select></label><button type="button" id="fxSwap" class="fx-swap" aria-label="Поменять валюты">⇄</button><label>В<select id="fxTo">${opts}</select></label></div>
+      <label class="fx-amount-label">Сумма<input id="fxAmount" type="number" min="0.01" step="0.01" value="1000" inputmode="decimal"></label>
+      <div id="fxQuote" class="fx-quote"></div><div id="fxRate" class="fx-rate"></div>
+      <button class="btn good" id="fxSubmit" style="width:100%;padding:14px;margin-top:14px">Обменять</button>
+    </div>
+    <div class="fx-foot">Источник: ${esc(data.source)} · данные на ${new Date(data.updated_at*1000).toLocaleString("ru-RU")}${data.stale?" · сохранённый курс":""}</div>`;
+  $("fxFrom").value="RUB"; $("fxTo").value="USD";
+  $("fxAmount").oninput=update; $("fxFrom").onchange=update; $("fxTo").onchange=update;
+  $("fxSwap").onclick=()=>{ const a=$("fxFrom").value; $("fxFrom").value=$("fxTo").value; $("fxTo").value=a; update(); };
+  $("fxSubmit").onclick=async()=>{
+    const button=$("fxSubmit"); button.disabled=true; button.textContent="Обмениваем…";
+    try{
+      const r=await api("/api/currencies/convert","POST",{from:$("fxFrom").value,to:$("fxTo").value,amount:Number($("fxAmount").value)});
+      S.player.balance=r.balance; renderHeader(); toast(`Обменено: ${r.debited} ${r.from} → ${r.credited} ${r.to}`); beep(700,.12);
+      RENDER.currencies(body);
+    }catch(e){
+      toast(e.data&&e.data.error==="no_funds"?"Недостаточно средств в выбранной валюте":"Обмен не выполнен: "+(e.data&&e.data.error||e.message));
+      button.disabled=false; button.textContent="Обменять";
+    }
+  };
+  update();
+};
+
 /* --- Коллекция --- */
 RENDER.inv=(body,search)=>{
   $("panelTitle").textContent="📱 Коллекция";
@@ -766,9 +833,10 @@ RENDER.inv=(body,search)=>{
 };
 
 async function sellNum(id){
-  try{ const r=await api("/api/sell","POST",{number_id:id});
+  try{ const item=S.inv.find(n=>n.id===id); const r=await api("/api/sell","POST",{number_id:id});
     S.player.balance=r.balance; S.inv=await refreshInv(); renderHeader();
-    toast(`💰 +${money(r.earned)}`); beep(700,.1);
+    const received=r.earned_native!=null?r.earned_native:(item?item.p:r.earned);
+    toast(`💰 +${nativePrice(received,item?item.k:"RU")}`); beep(700,.1);
     RENDER.inv($("panelBody"),$("panelSearch"));
   }catch(e){ toast("Ошибка продажи"); }
 }
@@ -777,7 +845,7 @@ async function massSell(mode){
   if(!await askConfirm(`Продать ${label}? Это действие нельзя отменить.`, "Массовая продажа")) return;
   try{ const r=await api("/api/mass_sell","POST",{mode});
     S.player.balance=r.balance; S.inv=await refreshInv(); renderHeader();
-    toast(`💰 Продано ${r.count} · +${money(r.earned)}`); confetti();
+    toast(`💰 Продано ${r.count} · +${dotSep(r.earned_rub??(r.earned*100))}₽ экв.`); confetti();
     RENDER.inv($("panelBody"),$("panelSearch"));
   }catch(e){ toast(e.data&&e.data.error==="nothing"?"Нечего продавать":"Ошибка"); }
 }
@@ -864,13 +932,16 @@ function openUpgrade(id){
     place(winLbl,edge/2); place(loseLbl,(edge+360)/2);
     $("upChanceVal").textContent=`${ch}%`;
     $("upStepsVal").textContent=`+${stepsFor(ch)} кат.`;
-    $("upCostVal").textContent=money(costFor(ch,stepsFor(ch)));
+    $("upCostVal").textContent=nativePrice(costFor(ch,stepsFor(ch))*BASE(n.k),n.k);
     $("upSliderVal").textContent=`${ch}%`;
     $("upChance").value=ch;
     $("upPresets").querySelectorAll("button").forEach(b=>b.classList.toggle("on",+b.dataset.v===ch));
-    const bal=(S.player.balance||0)+(S.player.donate_balance||0);
-    $("upGo").disabled=bal<costFor(ch,stepsFor(ch));
-    $("upGo").textContent=bal<costFor(ch,stepsFor(ch))?"💸 Недостаточно средств":"🎡 КРУТИТЬ КОЛЕСО";
+    const itemCountry=C_BY_ID[n.k]||CTRY[0];
+    const wallet=(S.player.wallets&&S.player.wallets[itemCountry.code])||0;
+    const available=wallet+(S.player.donate_balance||0)*itemCountry.b;
+    const need=costFor(ch,stepsFor(ch))*itemCountry.b;
+    $("upGo").disabled=available<need;
+    $("upGo").textContent=available<need?"💸 Недостаточно средств":"🎡 КРУТИТЬ КОЛЕСО";
   }
   draw(45);
   $("upChance").oninput=e=>draw(+e.target.value);
@@ -918,7 +989,7 @@ async function showWheelResult(r,n){
           <div class="price">${priceOf(r.item.p,r.item.k)}</div>
         </div>
       </div>
-      <div class="upResultNote">+${r.steps} категории · шанс был ${r.chance}% · стоимость ${money(r.cost)}</div>
+      <div class="upResultNote">+${r.steps} категории · шанс был ${r.chance}% · стоимость ${nativePrice(r.cost_native||r.cost*BASE(n.k),n.k)}</div>
       <button class="btn good" id="upOk" style="width:100%;margin-top:14px;padding:14px">Отлично!</button>`);
   }else{
     beep(180,.35,"sawtooth",.07); buzz([90,60,90]);
@@ -1020,7 +1091,8 @@ async function buyLot(id){
   try{
     const r=await api("/api/market/buy","POST",{listing_id:id});
     S.player.balance=r.balance; await refreshInv(); renderHeader();
-    toast(`✅ Куплено за ${money(r.paid)}`); confetti(); beep(760,.15);
+    const paidCountry=CTRY.find(c=>c.code===r.currency);
+    toast(`✅ Куплено за ${(Number(r.paid_native)||0).toLocaleString("ru-RU",{maximumFractionDigits:2})}${paidCountry?paidCountry.cur:r.currency||""}`); confetti(); beep(760,.15);
     RENDER.market($("panelBody"),$("panelSearch"));
   }catch(e){
     if(e.data&&e.data.error==="no_funds") toast("💸 Недостаточно средств");
@@ -1255,7 +1327,7 @@ RENDER.profile=async(body)=>{
     <div class="row"><span class="ic">🏅</span><span class="mid"><span class="t">Уровень ${S.level}</span>
       <span class="s">${fmt(p.xp)} XP · до ${fmt(S.nextXp)}</span><span class="pbar"><i style="width:${prog}%"></i></span></span></div>
     <div class="msum" style="margin-top:12px">
-      <div><div class="v">${money(p.balance)}</div><div class="l">баланс</div></div>
+      <div><div class="v">${walletMoney(S.country)}</div><div class="l">баланс · ${esc(C_BY_ID[S.country].name)}</div></div>
       <div><div class="v">${S.inv.length}</div><div class="l">номеров</div></div>
       <div><div class="v">${st.spins||0}</div><div class="l">спинов</div></div>
       <div><div class="v">${st.rare||0}</div><div class="l">редких</div></div>

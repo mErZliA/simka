@@ -1,0 +1,20 @@
+/* currency exchange panel */
+.fx-intro{padding:12px 14px;margin:0 0 12px;border:1px solid rgba(34,211,238,.22);border-radius:15px;background:rgba(34,211,238,.07);color:var(--mut);font-size:12px;line-height:1.5}
+.fx-wallets{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:14px}
+.fx-wallet{min-width:0;display:grid;grid-template-columns:30px minmax(0,1fr);align-items:center;gap:4px 8px;padding:11px;border-radius:14px;border:1px solid var(--stroke);background:linear-gradient(145deg,rgba(20,30,62,.84),rgba(8,14,34,.78));box-shadow:inset 0 1px rgba(255,255,255,.05)}
+.fx-symbol{grid-row:span 2;width:28px;height:28px;display:grid;place-items:center;border-radius:10px;background:rgba(34,211,238,.12);color:#7de8ff;font-size:13px;font-weight:900}
+.fx-name{min-width:0;color:var(--mut);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fx-name small{display:block;font-size:9px;opacity:.65;margin-top:2px}
+.fx-wallet b{font-size:13px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fx-card{padding:14px;border:1px solid rgba(139,92,246,.27);border-radius:18px;background:linear-gradient(145deg,rgba(46,29,91,.25),rgba(7,14,34,.9));box-shadow:0 12px 36px rgba(0,0,0,.22)}
+.fx-pair{display:grid;grid-template-columns:minmax(0,1fr) 34px minmax(0,1fr);gap:8px;align-items:end}
+.fx-pair label,.fx-amount-label{display:block;color:var(--mut);font-size:11px;font-weight:700}
+.fx-pair select,.fx-amount-label input{display:block;width:100%;height:43px;margin-top:6px;padding:0 10px;border:1px solid var(--stroke);border-radius:12px;background:rgba(4,9,24,.85);color:#fff;font:inherit;font-size:13px;outline:none}
+.fx-pair select:focus,.fx-amount-label input:focus{border-color:var(--acc);box-shadow:0 0 0 2px rgba(34,211,238,.13)}
+.fx-swap{height:38px;margin-bottom:2px;border-radius:12px;border:1px solid rgba(34,211,238,.25);background:rgba(34,211,238,.1);color:#8aeeff;font-size:20px}
+.fx-amount-label{margin-top:13px}
+.fx-quote{margin-top:13px;color:#fff;font-size:16px;font-weight:850;overflow-wrap:anywhere}
+.fx-rate,.fx-foot{margin-top:7px;color:var(--mut);font-size:10px;line-height:1.5}
+.fx-foot{text-align:center;margin-bottom:8px}
+#fxSubmit:disabled{opacity:.5;filter:saturate(.4)}
+@media(max-width:370px){.fx-wallets{grid-template-columns:1fr}.fx-pair{gap:5px}.fx-pair select{padding:0 6px;font-size:11px}}

@@ -88,6 +88,7 @@ st, d = call("POST", "/api/decide", {"uid": UID, "action": "keep"})
 check("keep", st == 200, f"earned={d.get('earned')}")
 
 print("== спин x5 + категория редкий ==")
+_db.wallet_apply_deltas(UID, [{"currency": "USD", "amount": 1000}])  # top-up only for this API regression case
 st, d = call("POST", "/api/spin", {"uid": UID, "country": "US", "count": 5, "category": "rare"})
 items = d.get("items", [])
 check("spin x5", st == 200 and len(items) == 5, f"got={len(items)}")
@@ -118,6 +119,7 @@ check("награда за период выдаётся один раз", st ==
 print("== коины удачи ==")
 # гарантируем коины независимо от того, был ли импорт (БД может быть непустой)
 _db.touch_player(UID, coins=10)
+_db.wallet_apply_deltas(UID, [{"currency": "JPY", "amount": 100000}])
 st, d = call("POST", "/api/spin", {"uid": UID, "country": "JP", "count": 2, "useCoins": True})
 check("spin с коинами", st == 200 and d.get("coins_used") == 2, f"coins_used={d.get('coins_used')} luck={d.get('luck_mult')}")
 
@@ -131,6 +133,9 @@ check("sell", st == 200, f"earned={d.get('earned')}")
 print("== апгрейд ==")
 st, d = call("GET", f"/api/state?uid={UID}")
 inv = d.get("inventory", [])
+upgrade_currency = {"RU": "RUB", "US": "USD", "DE": "EUR", "GB": "GBP",
+                    "CN": "CNY", "JP": "JPY", "KZ": "KZT", "TR": "TRY"}.get(inv[0]["k"], "RUB")
+_db.wallet_apply_deltas(UID, [{"currency": upgrade_currency, "amount": 100000}])
 st, d = call("POST", "/api/upgrade", {"uid": UID, "number_id": inv[0]["id"], "chance": 45})
 check("upgrade (колесо)", st == 200, f"win={d.get('win')} new={(d.get('item') or {}).get('r')}")
 wheel = d.get("wheel") or {}
@@ -153,8 +158,11 @@ check("market list виден другим", st == 200 and len(d.get("listings",
 listing = (d.get("listings") or [{}])[0]
 # второй игрок покупает
 st, d = call("POST", "/api/auth", {"uid": 111222, "profile": {"first_name": "Покупатель"}})
-# гарантируем средства покупателю (БД может сохраняться между прогонами)
-_db.touch_player(111222, balance=100000)
+# Гарантируем валюту лота покупателю независимо от стартовых остатков.
+market_num = _db.get_number((listing.get("item") or {}).get("id"))
+_market_currency = {"RU": "RUB", "US": "USD", "DE": "EUR", "GB": "GBP",
+                    "CN": "CNY", "JP": "JPY", "KZ": "KZT", "TR": "TRY"}.get(market_num["k"], "RUB")
+_db.wallet_apply_deltas(111222, [{"currency": _market_currency, "amount": 100000}])
 st, d = call("POST", "/api/market/buy", {"uid": 111222, "listing_id": listing.get("id")})
 check("покупка другим игроком", st in (200, 402), f"status={st} err={d.get('error')}")
 if st == 402:  # не хватило денег — начислим и повторим
@@ -310,15 +318,17 @@ st, d = call("POST", "/api/auth", {"uid": GRANT_UID,
                                      "profile": {"username": GRANT_NAME, "first_name": "Получатель"}})
 st, before = call("GET", f"/api/state?uid={GRANT_UID}")
 old_balance = before.get("player", {}).get("balance", 0)
+old_jpy = before.get("wallets", {}).get("JPY", 0)
 st, d = call("POST", "/api/admin/grant", {"uid": UID, "username": "@" + GRANT_NAME,
                                              "amount": 10000, "country": "JP"})
 check("админ выдал иены по Telegram username",
-      st == 200 and d.get("currency") == "JP¥" and d.get("amount_units") == 50,
+      st == 200 and d.get("currency") == "JP¥" and d.get("amount_units", 0) > 0,
       f"currency={d.get('currency')} units={d.get('amount_units')}")
 st, after = call("GET", f"/api/state?uid={GRANT_UID}")
-check("выданный баланс зачислен",
-      round(after.get("player", {}).get("balance", 0) - old_balance, 2) == 50,
-      f"delta={after.get('player', {}).get('balance', 0) - old_balance}")
+check("выданная валюта и баланс зачислены",
+      round(after.get("wallets", {}).get("JPY", 0) - old_jpy, 2) == 10000
+      and round(after.get("player", {}).get("balance", 0) - old_balance, 2) == round(d.get("amount_units", 0), 2),
+      f"wallet_delta={after.get('wallets',{}).get('JPY',0)-old_jpy} balance_delta={after.get('player',{}).get('balance',0)-old_balance}")
 st, d = call("GET", f"/api/admin/stats?uid={UID}")
 check("выдача записана в журнал", any(x.get("username") == GRANT_NAME for x in d.get("admin_grants", [])))
 st, d = call("POST", "/api/admin/grant", {"uid": GRANT_UID, "username": GRANT_NAME,

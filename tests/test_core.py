@@ -11,10 +11,11 @@ import time
 import unittest
 from pathlib import Path
 from urllib.parse import urlencode
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from bot import db, game
 from bot.backup import create_backup
+from bot import fx
 from bot.utils import security
 from bot.web import server
 
@@ -122,6 +123,128 @@ class PeriodTaskTests(unittest.TestCase):
                 self.assertFalse(db.task_progress_claim(uid, "s5", 1000, 5))
                 self.assertEqual(db.task_progress_get(uid, "s5", 86_401_000),
                                  {"progress": 0, "claimed": False})
+            finally:
+                if db._conn:
+                    db._conn.close()
+                db._conn = old_conn
+                db.DB_PATH = old_path
+
+
+class CurrencyWalletTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.old_path, self.old_conn = db.DB_PATH, db._conn
+        db.DB_PATH, db._conn = Path(self.temp.name) / "wallets.sqlite3", None
+        self.uid = 77123
+        db.create_player(self.uid)
+
+    def tearDown(self):
+        if db._conn:
+            db._conn.close()
+        db._conn = self.old_conn
+        db.DB_PATH = self.old_path
+        self.temp.cleanup()
+
+    def test_new_player_gets_40k_rub_and_15k_rub_equivalent_per_other_currency(self):
+        rates = {"RUB": 1, "USD": .01, "EUR": .009, "GBP": .008,
+                 "CNY": .07, "JPY": 1.5, "KZT": 5, "TRY": .4}
+        self.assertTrue(db.wallets_initialize(self.uid, is_new_player=True,
+                                              legacy_balance=100, rates=rates))
+        wallets = db.wallets_get(self.uid)
+        self.assertEqual(wallets["RUB"], 40000)
+        self.assertEqual(set(wallets), fx.CURRENCY_CODES)
+        for code in fx.CURRENCY_CODES - {"RUB"}:
+            self.assertAlmostEqual(wallets[code] / rates[code], 15000, places=2)
+        self.assertEqual(db.get_player(self.uid)["balance"], 1450)
+        self.assertFalse(db.wallets_initialize(self.uid, is_new_player=True,
+                                               legacy_balance=100, rates=rates))
+
+    def test_legacy_wallet_migration_and_atomic_exchange(self):
+        rates = {"RUB": 1, "USD": .01, "EUR": .009, "GBP": .008,
+                 "CNY": .07, "JPY": 1.5, "KZT": 5, "TRY": .4}
+        self.assertTrue(db.wallets_initialize(self.uid, is_new_player=False, legacy_balance=100))
+        self.assertEqual(db.wallet_get(self.uid, "RUB"), 10000)
+        self.assertEqual(db.wallet_get(self.uid, "USD"), 0)
+        self.assertTrue(db.wallet_exchange(self.uid, "RUB", "USD", 1000, fx.convert(1000, "RUB", "USD", rates)))
+        self.assertEqual(db.wallet_get(self.uid, "RUB"), 9000)
+        self.assertEqual(db.wallet_get(self.uid, "USD"), 10)
+        self.assertFalse(db.wallet_exchange(self.uid, "RUB", "EUR", 99999, 899.91))
+
+    def test_live_rate_conversion_and_quote_validation(self):
+        rates = {"RUB": 1, "USD": .01, "EUR": .009, "GBP": .008,
+                 "CNY": .07, "JPY": 1.5, "KZT": 5, "TRY": .4}
+        self.assertEqual(fx.convert(10, "USD", "RUB", rates), 1000)
+        self.assertEqual(fx.convert(15000, "RUB", "JPY", rates), 22500)
+        self.assertEqual(fx.rub_value(100, "USD", rates), 10000)
+        payload = {"result": "success", "base_code": "RUB", "rates": rates,
+                   "time_last_update_unix": int(time.time())}
+        self.assertEqual(fx._validate_rates(payload)["rates"], rates)
+        with self.assertRaises(ValueError):
+            fx.convert(1, "BAD", "RUB", rates)
+
+
+class CurrencyAPITests(unittest.IsolatedAsyncioTestCase):
+    async def test_pending_starter_grant_completes_when_rates_arrive(self):
+        with tempfile.TemporaryDirectory() as temp:
+            old_path, old_conn = db.DB_PATH, db._conn
+            db.DB_PATH, db._conn = Path(temp) / "currencies.sqlite3", None
+            uid = 88110
+            rates = {"RUB": 1, "USD": .01, "EUR": .009, "GBP": .008,
+                     "CNY": .07, "JPY": 1.5, "KZT": 5, "TRY": .4}
+            snapshot = {"rates": rates, "updated_at": int(time.time()), "source": "test"}
+            try:
+                db.create_player(uid)
+                db.wallets_initialize(uid, is_new_player=True, legacy_balance=100)
+                player = db.player_dict(db.get_player(uid))
+
+                class Request:
+                    query = {"uid": str(uid)}
+                    async def json(self):
+                        return {}
+
+                with patch.object(server, "_load_profile", return_value=(uid, player)), \
+                     patch.object(server.fx, "get_rates", new=AsyncMock(return_value=snapshot)):
+                    response = await server.api_currencies(Request())
+                data = json.loads(response.text)
+                self.assertEqual(response.status, 200)
+                self.assertEqual(db.get_player(uid)["balance"], 1450)
+                self.assertEqual(db.wallet_get(uid, "RUB"), 40000)
+                self.assertAlmostEqual(db.wallet_get(uid, "USD") / rates["USD"], 15000)
+                self.assertEqual(data["source"], "test")
+            finally:
+                if db._conn:
+                    db._conn.close()
+                db._conn = old_conn
+                db.DB_PATH = old_path
+
+    async def test_exchange_endpoint_debits_and_credits_server_side(self):
+        with tempfile.TemporaryDirectory() as temp:
+            old_path, old_conn = db.DB_PATH, db._conn
+            db.DB_PATH, db._conn = Path(temp) / "exchange.sqlite3", None
+            uid = 88111
+            rates = {"RUB": 1, "USD": .01, "EUR": .009, "GBP": .008,
+                     "CNY": .07, "JPY": 1.5, "KZT": 5, "TRY": .4}
+            snapshot = {"rates": rates, "updated_at": int(time.time()), "source": "test"}
+            try:
+                db.create_player(uid)
+                db.wallets_initialize(uid, is_new_player=True, legacy_balance=100, rates=rates)
+                player = db.player_dict(db.get_player(uid))
+                server._RATE_BUCKETS.pop(f"fx:{uid}", None)
+
+                class Request:
+                    query = {}
+                    async def json(self):
+                        return {"uid": uid, "from": "RUB", "to": "USD", "amount": 1000}
+
+                with patch.object(server, "_load_profile", return_value=(uid, player)), \
+                     patch.object(server, "maintenance_guard", return_value=None), \
+                     patch.object(server.fx, "get_rates", new=AsyncMock(return_value=snapshot)):
+                    response = await server.api_currency_convert(Request())
+                data = json.loads(response.text)
+                self.assertEqual(response.status, 200)
+                self.assertEqual(data["credited"], 10)
+                self.assertEqual(db.wallet_get(uid, "RUB"), 39000)
+                self.assertEqual(db.wallet_get(uid, "USD"), 160)
             finally:
                 if db._conn:
                     db._conn.close()

@@ -20,6 +20,7 @@ from aiohttp import web
 
 import bot.db as db
 import bot.game as game
+import bot.fx as fx
 from bot.config import APP_ENV, ADMIN_IDS, BOT_TOKEN, CHANNEL, DEV_MODE, PORT, WEBAPP_DIR, WEBAPP_URL
 from bot.utils.security import verify_init_data
 from bot.utils.notify import notify_maintenance
@@ -137,6 +138,7 @@ def auth_uid(request: web.Request, payload: dict) -> int | None:
 
 def ensure_player(user_id: int, profile: dict | None = None) -> dict:
     row = db.get_player(user_id)
+    is_new = row is None
     if row:
         p = db.player_dict(row)
         if profile:
@@ -150,6 +152,10 @@ def ensure_player(user_id: int, profile: dict | None = None) -> dict:
         if user_id in ADMIN_IDS or user_id in db.admin_list():
             db.admin_add(user_id)
             p["is_admin"] = True
+    # One-time migration: old common units were denominated as 100 RUB each.
+    db.wallets_initialize(user_id, is_new_player=is_new, legacy_balance=p.get("balance", 100))
+    p = db.player_dict(db.get_player(user_id))
+    p["wallets"] = db.wallets_get(user_id)
     # админы из .env всегда в списке админов
     if user_id in ADMIN_IDS and not p.get("is_admin"):
         db.admin_add(user_id)
@@ -290,8 +296,10 @@ def state_payload(p: dict) -> dict:
     inv = db.player_numbers(p["user_id"])
     lvl = db.level_of(p["xp"])
     cur_xp, next_xp = db.xp_bounds(lvl)
+    p["wallets"] = db.wallets_get(p["user_id"])
     return {
         "player": p,
+        "wallets": p["wallets"],
         "inventory": inv,
         "level": lvl,
         "level_xp": cur_xp,
@@ -304,7 +312,102 @@ def state_payload(p: dict) -> dict:
     }
 
 
+def _fallback_accounting_rates() -> dict[str, float]:
+    """Old game pricing ratios used only for totals if the live FX provider is down."""
+    return {fx.CURRENCY_BY_COUNTRY[c["k"]]: float(c["b"]) / 100.0 for c in game.COUNTRIES}
+
+
+async def _wallet_rates(user_id: int) -> tuple[dict[str, float], dict | None]:
+    try:
+        snapshot = await fx.get_rates()
+        db.wallets_finish_starter_grant(user_id, snapshot["rates"])
+        return snapshot["rates"], snapshot
+    except fx.FXUnavailable:
+        return _fallback_accounting_rates(), None
+
+
+def _wallet_value_units(amount: float, currency: str, rates: dict[str, float]) -> float:
+    return round(fx.rub_value(amount, currency, rates) / 100.0, 2)
+
+
+def _wallet_settlement(balance_before: float, balance_after: float,
+                       native_deltas: list[dict], rates: dict[str, float]) -> list[dict]:
+    """Add any legacy reward/adjustment to RUB while preserving FX wallet movements."""
+    units_from_wallets = sum(_wallet_value_units(float(d["amount"]), d["currency"], rates)
+                             for d in native_deltas)
+    residual_rub = round((float(balance_after) - float(balance_before) - units_from_wallets) * 100, 2)
+    result = list(native_deltas)
+    if abs(residual_rub) >= 0.005:
+        result.append({"currency": "RUB", "amount": residual_rub})
+    return result
+
+
 # ================================================================ API
+async def api_currencies(request: web.Request) -> web.Response:
+    payload = {**await read_json(request), **dict(request.query)}
+    auth = _load_profile(request, payload)
+    if not auth:
+        return web.json_response({"ok": False, "error": "bad_init"}, status=403)
+    uid, _ = auth
+    try:
+        snapshot = await fx.get_rates()
+        db.wallets_finish_starter_grant(uid, snapshot["rates"])
+    except fx.FXUnavailable as exc:
+        return web.json_response({"ok": False, "error": "fx_unavailable", "detail": str(exc),
+                                  "wallets": db.wallets_get(uid)}, status=503)
+    return web.json_response({"ok": True, "currencies": fx.CURRENCIES,
+                              "wallets": db.wallets_get(uid),
+                              "balance": db.get_player(uid)["balance"], "rates": snapshot["rates"],
+                              "base": "RUB", "updated_at": snapshot["updated_at"],
+                              "source": snapshot["source"], "stale": bool(snapshot.get("stale"))})
+
+
+async def api_currency_convert(request: web.Request) -> web.Response:
+    payload = await read_json(request)
+    auth = _load_profile(request, payload)
+    if not auth:
+        return web.json_response({"ok": False, "error": "bad_init"}, status=403)
+    uid, p = auth
+    if (resp := maintenance_guard(p)) is not None:
+        return resp
+    limited = _rate_limited(f"fx:{uid}", 1, 10)
+    if limited:
+        return web.json_response({"ok": False, "error": "rate_limited", "retry_in": limited}, status=429)
+    source, target = str(payload.get("from") or ""), str(payload.get("to") or "")
+    try:
+        raw_amount = payload.get("amount")
+        amount = 0 if isinstance(raw_amount, bool) else fx.currency_round(float(raw_amount), source)
+    except (TypeError, ValueError):
+        amount = 0
+    if source not in fx.CURRENCY_CODES or target not in fx.CURRENCY_CODES or source == target:
+        return web.json_response({"ok": False, "error": "bad_currency"}, status=400)
+    if not (0.01 <= amount <= 1_000_000_000):
+        return web.json_response({"ok": False, "error": "bad_amount"}, status=400)
+    try:
+        snapshot = await fx.get_rates()
+        rates = snapshot["rates"]
+        db.wallets_finish_starter_grant(uid, rates)
+        p["balance"] = float(db.get_player(uid)["balance"])
+        output = fx.convert(amount, source, target, rates)
+        if output <= 0:
+            return web.json_response({"ok": False, "error": "amount_too_small"}, status=400)
+        delta_units = (fx.rub_value(output, target, rates) - fx.rub_value(amount, source, rates)) / 100.0
+    except fx.FXUnavailable:
+        return web.json_response({"ok": False, "error": "fx_unavailable"}, status=503)
+    old_balance = float(p.get("balance", 0))
+    deltas = [{"currency": source, "amount": -amount}, {"currency": target, "amount": output}]
+    ok = db.touch_player(uid, balance=round(old_balance + delta_units, 2), wallet_deltas=deltas)
+    if not ok:
+        return web.json_response({"ok": False, "error": "no_funds",
+                                  "wallets": db.wallets_get(uid)}, status=402)
+    return web.json_response({"ok": True, "from": source, "to": target,
+                              "debited": round(amount, 2), "credited": output,
+                              "rate": round(output / amount, 8),
+                              "wallets": db.wallets_get(uid),
+                              "balance": db.get_player(uid)["balance"],
+                              "updated_at": snapshot["updated_at"], "source": snapshot["source"]})
+
+
 async def api_health(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "maintenance": maintenance_state()})
 
@@ -316,10 +419,21 @@ async def api_auth(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "bad_init"}, status=403)
     profile = payload.get("profile") or {}
     p = ensure_player(uid, profile)
+    fx_updated = None
+    try:
+        snapshot = await fx.get_rates()
+        db.wallets_finish_starter_grant(uid, snapshot["rates"])
+        fx_updated = snapshot["updated_at"]
+        p = ensure_player(uid, profile)
+    except fx.FXUnavailable:
+        pass  # Login remains available; the foreign starter grant completes when rates recover.
     is_admin = viewer_is_admin(uid)
+    p["wallets"] = db.wallets_get(uid)
     return web.json_response({
         "ok": True,
         "player": p,
+        "wallets": db.wallets_get(uid),
+        "fx_updated_at": fx_updated,
         "is_admin": is_admin,
         "maintenance": maintenance_state(uid, is_admin),
         "limits": limits_payload(),
@@ -437,6 +551,13 @@ async def api_spin(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "rate_limited", "retry_in": limited}, status=429)
 
     country = str(payload.get("country") or "RU")
+    if country not in game.C_BY_ID:
+        country = "RU"
+    rates, _fx_snapshot = await _wallet_rates(uid)
+    p["balance"] = float(db.get_player(uid)["balance"])
+    balance_before = p["balance"]
+    wallet_deltas: list[dict] = []
+    currency = fx.CURRENCY_BY_COUNTRY[country]
     category = payload.get("category") or None
     if category and category not in game.R_BY_ID:
         category = None
@@ -472,15 +593,22 @@ async def api_spin(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "instant_ban"}, status=429)
 
     cost = game.spin_cost(category, count, free)
-    if not free and p["balance"] + p.get("donate_balance", 0) < cost:
-        return web.json_response({"ok": False, "error": "no_funds"}, status=402)
+    currency_cfg = game.C_BY_ID[country]
+    cost_native = round(cost * currency_cfg["b"], 2)
+    donor_native = min(cost_native, p.get("donate_balance", 0) * 100 * rates[currency])
+    debit_native = round(cost_native - donor_native, 2)
+    if not free and db.wallet_get(uid, currency) + 0.005 < debit_native:
+        return web.json_response({"ok": False, "error": "no_funds", "currency": currency,
+                                  "wallet": db.wallet_get(uid, currency), "need": debit_native}, status=402)
 
-    # списываем: сначала донат-баланс, потом обычный
+    # Донат-баланс считается RUB-эквивалентом, обычная сумма списывается
+    # с кошелька валюты выбранной страны.
     if cost:
-        from_donate = min(cost, p.get("donate_balance", 0))
-        p["donate_balance"] = round(p.get("donate_balance", 0) - from_donate, 2)
-        rest = cost - from_donate
-        p["balance"] = round(p["balance"] - rest, 2)
+        donor_used = donor_native / (100 * rates[currency]) if donor_native else 0
+        p["donate_balance"] = round(max(0, p.get("donate_balance", 0) - donor_used), 2)
+        p["balance"] = round(p["balance"] - _wallet_value_units(debit_native, currency, rates), 2)
+        if debit_native:
+            wallet_deltas.append({"currency": currency, "amount": -debit_native})
 
     # удача: купон (luck_until) + коин за каждый спин
     boost = 0.0
@@ -517,8 +645,9 @@ async def api_spin(request: web.Request) -> web.Response:
             p["stats"]["rare"] = p["stats"].get("rare", 0) + 1
             _record_task_activity(uid, "rare", 1)
         if count > 1 and p.get("autosell") and item["r"] in ("common", "unc"):
-            amt = game.to_units(item["p"], item["k"])
+            amt = _wallet_value_units(item["p"], currency, rates)
             p["balance"] = round(p["balance"] + amt, 2)
+            wallet_deltas.append({"currency": currency, "amount": float(item["p"])})
             p["stats"]["sold"] = p["stats"].get("sold", 0) + 1
             _record_task_activity(uid, "sold", 1)
             sold_total += amt
@@ -540,9 +669,11 @@ async def api_spin(request: web.Request) -> web.Response:
         add_xp(p, min(20, count * 2))
 
     _check_achievements(p)
-    db.touch_player(uid, balance=p["balance"], coins=p["coins"], xp=p["xp"],
-                    donate_balance=p["donate_balance"], free_at=p["free_at"],
-                    stats=p["stats"], history=p["history"], achievements=p["achievements"])
+    deltas = _wallet_settlement(balance_before, p["balance"], wallet_deltas, rates)
+    db.touch_player(uid, balance=p["balance"], wallet_deltas=deltas,
+                    coins=p["coins"], xp=p["xp"], donate_balance=p["donate_balance"],
+                    free_at=p["free_at"], stats=p["stats"], history=p["history"],
+                    achievements=p["achievements"])
 
     return web.json_response({
         "ok": True,
@@ -551,6 +682,9 @@ async def api_spin(request: web.Request) -> web.Response:
         "cost": cost,
         "luck_mult": round(luck_mult, 2),
         "balance": p["balance"],
+        "wallets": db.wallets_get(uid),
+        "currency": currency,
+        "cost_native": cost_native,
         "donate_balance": p.get("donate_balance", 0),
         "xp_events": xp_events["events"],
     })
@@ -570,14 +704,21 @@ async def api_decide(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "nothing"}, status=404)
     item = pend["item"]
     action = str(payload.get("action") or "")
+    rates, _fx_snapshot = await _wallet_rates(uid)
+    p["balance"] = float(db.get_player(uid)["balance"])
+    balance_before = p["balance"]
+    native_deltas: list[dict] = []
     earned = 0.0
 
     if action == "keep":
         db.add_number(uid, item)
         push_history(p, {"k": "keep", "num": item["num"]})
     elif action == "sell":
-        earned = game.to_units(item["p"], item["k"])
+        currency = fx.CURRENCY_BY_COUNTRY.get(item["k"], "RUB")
+        native_amount = round(float(item["p"]), 2)
+        earned = _wallet_value_units(native_amount, currency, rates)
         p["balance"] = round(p["balance"] + earned, 2)
+        native_deltas.append({"currency": currency, "amount": native_amount})
         p["stats"]["sold"] = p["stats"].get("sold", 0) + 1
         _record_task_activity(uid, "sold", 1)
         add_xp(p, 2)
@@ -587,9 +728,11 @@ async def api_decide(request: web.Request) -> web.Response:
 
     _pending.pop(uid, None)
     _check_achievements(p)
-    db.touch_player(uid, balance=p["balance"], xp=p["xp"], stats=p["stats"],
-                    history=p["history"], achievements=p["achievements"])
-    return web.json_response({"ok": True, "earned": earned, "balance": p["balance"]})
+    deltas = _wallet_settlement(balance_before, p["balance"], native_deltas, rates)
+    db.touch_player(uid, balance=p["balance"], wallet_deltas=deltas, xp=p["xp"],
+                    stats=p["stats"], history=p["history"], achievements=p["achievements"])
+    return web.json_response({"ok": True, "earned": earned, "balance": p["balance"],
+                              "wallets": db.wallets_get(uid)})
 
 
 # ---------------------------------------------------------------- бонус / бесплатный спин
@@ -647,15 +790,25 @@ async def api_upgrade(request: web.Request) -> web.Response:
     if num["r"] == "sec":
         return web.json_response({"ok": False, "error": "max"}, status=400)
 
+    rates, _fx_snapshot = await _wallet_rates(uid)
+    p["balance"] = float(db.get_player(uid)["balance"])
+    balance_before = p["balance"]
+    currency = fx.CURRENCY_BY_COUNTRY.get(num["k"], "RUB")
+    country_cfg = game.C_BY_ID.get(num["k"], game.COUNTRIES[0])
     cost = game.upgrade_cost(chance, steps, num["r"])
-    if p["balance"] + p.get("donate_balance", 0) < cost:
-        return web.json_response({"ok": False, "error": "no_funds",
-                                  "need": cost}, status=402)
+    cost_native = round(cost * country_cfg["b"], 2)
+    donor_native = min(cost_native, p.get("donate_balance", 0) * 100 * rates[currency])
+    debit_native = round(cost_native - donor_native, 2)
+    if db.wallet_get(uid, currency) + 0.005 < debit_native:
+        return web.json_response({"ok": False, "error": "no_funds", "currency": currency,
+                                  "need": debit_native, "wallet": db.wallet_get(uid, currency)}, status=402)
 
-    # списываем стоимость вращения (донат-баланс первым)
-    from_donate = min(cost, p.get("donate_balance", 0))
-    p["donate_balance"] = round(p.get("donate_balance", 0) - from_donate, 2)
-    p["balance"] = round(p["balance"] - (cost - from_donate), 2)
+    # Донат-средства сначала покрывают RUB-эквивалент, остаток списывается
+    # с кошелька валюты номера.
+    donor_used = donor_native / (100 * rates[currency]) if donor_native else 0
+    p["donate_balance"] = round(max(0, p.get("donate_balance", 0) - donor_used), 2)
+    p["balance"] = round(p["balance"] - _wallet_value_units(debit_native, currency, rates), 2)
+    wallet_deltas = ([{"currency": currency, "amount": -debit_native}] if debit_native else [])
 
     db.remove_number(number_id)   # при провале номер сгорает
     p["stats"]["upg"] = p["stats"].get("upg", 0) + 1
@@ -688,15 +841,19 @@ async def api_upgrade(request: web.Request) -> web.Response:
         push_history(p, {"k": "uplose", "num": num["num"], "chance": chance})
 
     _check_achievements(p)
+    deltas = _wallet_settlement(balance_before, p["balance"], wallet_deltas, rates)
     db.touch_player(uid, xp=p["xp"], stats=p["stats"], history=p["history"],
                     achievements=p["achievements"], balance=p["balance"],
-                    donate_balance=p["donate_balance"])
+                    wallet_deltas=deltas, donate_balance=p["donate_balance"])
     return web.json_response({
         "ok": True,
         "win": win,
         "item": result_item,
         "old": num,
         "balance": p["balance"],
+        "wallets": db.wallets_get(uid),
+        "currency": currency,
+        "cost_native": cost_native,
         "donate_balance": p["donate_balance"],
         "cost": cost,
         "chance": chance,
@@ -718,7 +875,12 @@ async def api_sell(request: web.Request) -> web.Response:
     num = db.get_number(number_id)
     if not num or num["player_id"] != uid:
         return web.json_response({"ok": False, "error": "not_found"}, status=404)
-    amt = game.to_units(num["p"], num["k"])
+    rates, _fx_snapshot = await _wallet_rates(uid)
+    p["balance"] = float(db.get_player(uid)["balance"])
+    balance_before = p["balance"]
+    currency = fx.CURRENCY_BY_COUNTRY.get(num["k"], "RUB")
+    native_amount = round(float(num["p"]), 2)
+    amt = _wallet_value_units(native_amount, currency, rates)
     db.remove_number(number_id)
     p["balance"] = round(p["balance"] + amt, 2)
     p["stats"]["sold"] = p["stats"].get("sold", 0) + 1
@@ -726,9 +888,13 @@ async def api_sell(request: web.Request) -> web.Response:
     add_xp(p, 2)
     push_history(p, {"k": "bank", "num": num["num"], "amt": amt})
     _check_achievements(p)
-    db.touch_player(uid, balance=p["balance"], xp=p["xp"], stats=p["stats"],
-                    history=p["history"], achievements=p["achievements"])
-    return web.json_response({"ok": True, "earned": amt, "balance": p["balance"]})
+    deltas = _wallet_settlement(balance_before, p["balance"],
+                                [{"currency": currency, "amount": native_amount}], rates)
+    db.touch_player(uid, balance=p["balance"], wallet_deltas=deltas, xp=p["xp"],
+                    stats=p["stats"], history=p["history"], achievements=p["achievements"])
+    return web.json_response({"ok": True, "earned": amt, "balance": p["balance"],
+                              "wallets": db.wallets_get(uid), "currency": currency,
+                              "earned_native": native_amount})
 
 
 async def api_mass_sell(request: web.Request) -> web.Response:
@@ -755,12 +921,19 @@ async def api_mass_sell(request: web.Request) -> web.Response:
     if not ids:
         return web.json_response({"ok": False, "error": "nothing"}, status=400)
 
+    rates, _fx_snapshot = await _wallet_rates(uid)
+    p["balance"] = float(db.get_player(uid)["balance"])
+    balance_before = p["balance"]
     total = 0.0
+    native_totals: dict[str, float] = {}
     for nid in ids:
         n = db.get_number(nid)
         if not n:
             continue
-        total += game.to_units(n["p"], n["k"])
+        currency = fx.CURRENCY_BY_COUNTRY.get(n["k"], "RUB")
+        native = round(float(n["p"]), 2)
+        native_totals[currency] = native_totals.get(currency, 0.0) + native
+        total += _wallet_value_units(native, currency, rates)
         db.remove_number(nid)
     total = round(total, 2)
     p["balance"] = round(p["balance"] + total, 2)
@@ -769,10 +942,14 @@ async def api_mass_sell(request: web.Request) -> web.Response:
     xp_ev = add_xp(p, min(20, len(ids) * 2))
     push_history(p, {"k": "mass_sell", "n": len(ids), "amt": total, "label": mode})
     _check_achievements(p)
-    db.touch_player(uid, balance=p["balance"], xp=p["xp"], stats=p["stats"],
-                    history=p["history"], achievements=p["achievements"])
+    native_deltas = [{"currency": code, "amount": amount} for code, amount in native_totals.items()]
+    deltas = _wallet_settlement(balance_before, p["balance"], native_deltas, rates)
+    db.touch_player(uid, balance=p["balance"], wallet_deltas=deltas, xp=p["xp"],
+                    stats=p["stats"], history=p["history"], achievements=p["achievements"])
     return web.json_response({"ok": True, "count": len(ids), "earned": total,
-                              "balance": p["balance"], "xp_events": xp_ev["events"]})
+                              "earned_rub": round(total * 100, 2),
+                              "balance": p["balance"], "wallets": db.wallets_get(uid),
+                              "xp_events": xp_ev["events"]})
 
 
 # ---------------------------------------------------------------- рынок (мультиплеер)
@@ -856,15 +1033,24 @@ async def api_market_buy(request: web.Request) -> web.Response:
     num = db.get_number(lot["number_id"])
     if not num:
         return web.json_response({"ok": False, "error": "gone"}, status=404)
-    cost = game.to_units(lot["price"], num["k"])
-    if p["balance"] + p.get("donate_balance", 0) < cost:
-        return web.json_response({"ok": False, "error": "no_funds"}, status=402)
-
-    from_donate = min(cost, p.get("donate_balance", 0))
-    p["donate_balance"] = round(p.get("donate_balance", 0) - from_donate, 2)
-    p["balance"] = round(p["balance"] - (cost - from_donate), 2)
+    rates, _fx_snapshot = await _wallet_rates(uid)
+    p["balance"] = float(db.get_player(uid)["balance"])
+    balance_before = p["balance"]
+    currency = fx.CURRENCY_BY_COUNTRY.get(num["k"], "RUB")
+    cost_native = round(float(lot["price"]), 2)
+    cost_units = _wallet_value_units(cost_native, currency, rates)
+    donor_native = min(cost_native, p.get("donate_balance", 0) * 100 * rates[currency])
+    debit_native = round(cost_native - donor_native, 2)
+    if db.wallet_get(uid, currency) + 0.005 < debit_native:
+        return web.json_response({"ok": False, "error": "no_funds", "currency": currency,
+                                  "need": debit_native, "wallet": db.wallet_get(uid, currency)}, status=402)
+    donor_used = donor_native / (100 * rates[currency]) if donor_native else 0
+    p["donate_balance"] = round(max(0, p.get("donate_balance", 0) - donor_used), 2)
+    p["balance"] = round(p["balance"] - _wallet_value_units(debit_native, currency, rates), 2)
 
     got = db.market_buy(listing_id, uid)
+    if not got:
+        return web.json_response({"ok": False, "error": "gone"}, status=409)
     seller_id = got["seller_id"]
     seller_amount = round(lot["price"] * (1 - game.FEE), 2)
     db.inbox_add(seller_id, "money", seller_amount, num["k"],
@@ -872,12 +1058,16 @@ async def api_market_buy(request: web.Request) -> web.Response:
     p["stats"]["bought"] = p["stats"].get("bought", 0) + 1
     _record_task_activity(uid, "bought", 1)
     add_xp(p, 5)
-    push_history(p, {"k": "buy", "num": num["num"], "amt": cost})
+    push_history(p, {"k": "buy", "num": num["num"], "amt": cost_units})
     _check_achievements(p)
-    db.touch_player(uid, balance=p["balance"], donate_balance=p["donate_balance"],
-                    xp=p["xp"], stats=p["stats"], history=p["history"],
-                    achievements=p["achievements"])
-    return web.json_response({"ok": True, "paid": cost, "balance": p["balance"]})
+    native_deltas = ([{"currency": currency, "amount": -debit_native}] if debit_native else [])
+    deltas = _wallet_settlement(balance_before, p["balance"], native_deltas, rates)
+    db.touch_player(uid, balance=p["balance"], wallet_deltas=deltas,
+                    donate_balance=p["donate_balance"], xp=p["xp"], stats=p["stats"],
+                    history=p["history"], achievements=p["achievements"])
+    return web.json_response({"ok": True, "paid": _wallet_value_units(cost_native, currency, rates),
+                              "paid_native": cost_native, "currency": currency,
+                              "balance": p["balance"], "wallets": db.wallets_get(uid)})
 
 
 async def api_market_accept_swap(request: web.Request) -> web.Response:
@@ -916,14 +1106,22 @@ async def api_inbox(request: web.Request) -> web.Response:
     if not auth:
         return web.json_response({"ok": False, "error": "bad_init"}, status=403)
     uid, p = auth
+    rates, _fx_snapshot = await _wallet_rates(uid)
+    p["balance"] = float(db.get_player(uid)["balance"])
+    balance_before = p["balance"]
     items = db.inbox_take(uid)
     earned = 0.0
     got_items = []
+    native_totals: dict[str, float] = {}
     for it in items:
         if it["kind"] == "money":
-            amt = float(it["amount"])
-            c = game.C_BY_ID.get(it["currency"])
-            units = round(amt / c["b"], 2) if c else round(amt, 2)
+            amt = round(float(it["amount"]), 2)
+            stored_currency = str(it["currency"] or "")
+            currency = fx.CURRENCY_BY_COUNTRY.get(stored_currency, stored_currency)
+            if currency not in fx.CURRENCY_CODES:
+                currency = "RUB"
+            native_totals[currency] = native_totals.get(currency, 0.0) + amt
+            units = _wallet_value_units(amt, currency, rates)
             p["balance"] = round(p["balance"] + units, 2)
             earned += units
             push_history(p, {"k": "inbox", "amt": units})
@@ -934,9 +1132,12 @@ async def api_inbox(request: web.Request) -> web.Response:
                 got_items.append(num["num"])
                 push_history(p, {"k": "got_item", "num": num["num"]})
     if items:
-        db.touch_player(uid, balance=p["balance"], history=p["history"])
+        native_deltas = [{"currency": code, "amount": amount} for code, amount in native_totals.items()]
+        deltas = _wallet_settlement(balance_before, p["balance"], native_deltas, rates)
+        db.touch_player(uid, balance=p["balance"], wallet_deltas=deltas, history=p["history"])
     return web.json_response({"ok": True, "count": len(items), "earned": earned,
-                              "items": got_items, "balance": p["balance"]})
+                              "items": got_items, "balance": p["balance"],
+                              "wallets": db.wallets_get(uid)})
 
 
 # ---------------------------------------------------------------- задания / достижения
@@ -988,7 +1189,7 @@ ACHS = [
     {"id": "leg",     "i": "👑", "t": "Легендарный номер",     "c": lambda p, inv: any(game.R_INDEX.get(n["r"], 0) >= 5 for n in inv)},
     {"id": "sec",     "i": "🌌", "t": "Секретный номер",       "c": lambda p, inv: any(n["r"] == "sec" for n in inv)},
     {"id": "ops",     "i": "📡", "t": "3 разных оператора",     "c": lambda p, inv: len({n["op"] for n in inv}) >= 3},
-    {"id": "rich",    "i": "💰", "t": "Богач",                    "c": lambda p, inv: p["balance"] >= 1000},
+    {"id": "rich",    "i": "💰", "t": "Богач",                    "c": lambda p, inv: p["balance"] >= 2500},
     {"id": "lvl5",    "i": "⭐", "t": "Уровень 5",             "c": lambda p, inv: db.level_of(p["xp"]) >= 5},
     {"id": "streak7", "i": "🔥", "t": "Стрик 7 дней",          "c": lambda p, inv: p.get("streak", 0) >= 7},
     {"id": "trader",  "i": "🤝", "t": "10 сделок на рынке",    "c": lambda p, inv: p["stats"].get("sold", 0) + p["stats"].get("bought", 0) >= 10},
@@ -1349,13 +1550,15 @@ async def api_admin_grant(request: web.Request) -> web.Response:
     target = db.find_player_by_username(username)
     if not target:
         return web.json_response({"ok": False, "error": "player_not_found"}, status=404)
-
-    units = game.to_units(amount, country_id)
+    ensure_player(target["user_id"])
+    rates, _fx_snapshot = await _wallet_rates(target["user_id"])
+    currency_code = fx.CURRENCY_BY_COUNTRY[country_id]
+    units = _wallet_value_units(amount, currency_code, rates)
     if units <= 0:
         return web.json_response({"ok": False, "error": "amount_too_small"}, status=400)
     try:
         balance = db.admin_grant_balance(
-            admin["user_id"], target["user_id"], country_id, amount, units
+            admin["user_id"], target["user_id"], currency_code, amount, units
         )
     except ValueError:
         return web.json_response({"ok": False, "error": "player_not_found"}, status=404)
@@ -1516,7 +1719,9 @@ async def start_server() -> web.AppRunner:
     app.router.add_post("/api/market/accept_swap", api_market_accept_swap)
     app.router.add_post("/api/inbox", api_inbox)
 
-    # прогресс
+    # валюты и прогресс
+    app.router.add_get("/api/currencies", api_currencies)
+    app.router.add_post("/api/currencies/convert", api_currency_convert)
     app.router.add_route("*", "/api/tasks", api_tasks)
     app.router.add_post("/api/tasks/claim", api_task_claim)
     app.router.add_get("/api/rating", api_rating)

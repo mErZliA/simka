@@ -3,6 +3,8 @@ SQLite-хранилище SIM Roulette.
 
 Таблицы:
   players            — игроки (Telegram-пользователи): баланс, опыт, настройки, статусы
+  player_wallets     — отдельные счета игроков в доступных игровых валютах
+  fx_cache           — последняя проверенная выборка справочных курсов валют
   numbers            — номера (инвентарь игроков), привязаны к player_id
   market             — лоты на рынке (продажа номеров за баланс)
   offers             — предложения обмена номерами
@@ -202,6 +204,28 @@ def _init(c: sqlite3.Connection) -> None:
             value TEXT DEFAULT ''
         );
 
+        CREATE TABLE IF NOT EXISTS player_wallets (
+            user_id   INTEGER NOT NULL,
+            currency  TEXT    NOT NULL,
+            amount    REAL    NOT NULL DEFAULT 0,
+            PRIMARY KEY (user_id, currency),
+            FOREIGN KEY (user_id) REFERENCES players(user_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS wallet_meta (
+            user_id             INTEGER PRIMARY KEY,
+            is_new_player       INTEGER NOT NULL DEFAULT 0,
+            foreign_grant_done INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY (user_id) REFERENCES players(user_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS fx_cache (
+            id         INTEGER PRIMARY KEY CHECK (id=1),
+            rates_json TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            source     TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS task_progress (
             user_id      INTEGER NOT NULL,
             task_id      TEXT    NOT NULL,
@@ -306,10 +330,135 @@ def player_dict(row: sqlite3.Row) -> dict:
     return d
 
 
-def touch_player(user_id: int, **fields) -> None:
-    """Обновить поля игрока (принимает только известные колонки)."""
-    if not fields:
-        return
+def _wallet_round(currency: str, amount: float) -> float:
+    return round(float(amount), 0 if currency == "JPY" else 2)
+
+
+def wallets_initialize(user_id: int, *, is_new_player: bool, legacy_balance: float,
+                       rates: dict[str, float] | None = None) -> bool:
+    """Initialize multi-currency wallets once; legacy balance is converted to RUB."""
+    c = connect()
+    currencies = ("RUB", "USD", "EUR", "GBP", "CNY", "JPY", "KZT", "TRY")
+    with _lock:
+        if c.execute("SELECT 1 FROM wallet_meta WHERE user_id=?", (user_id,)).fetchone():
+            return False
+        if is_new_player:
+            balances = {code: 0.0 for code in currencies}
+            balances["RUB"] = 40000.0
+            complete = bool(rates)
+            if rates:
+                for code in currencies:
+                    if code != "RUB":
+                        balances[code] = _wallet_round(code, 15000.0 * float(rates[code]))
+            total_units = sum(balances[k] / float((rates or {}).get(k, 1.0))
+                              for k in currencies) / 100.0 if rates else 400.0
+            c.execute("UPDATE players SET balance=? WHERE user_id=?", (round(total_units, 2), user_id))
+            is_new, foreign_done = 1, int(complete)
+        else:
+            balances = {code: 0.0 for code in currencies}
+            balances["RUB"] = round(max(0.0, float(legacy_balance)) * 100.0, 2)
+            is_new, foreign_done = 0, 1
+        c.executemany("INSERT OR IGNORE INTO player_wallets(user_id,currency,amount) VALUES(?,?,?)",
+                      [(user_id, code, _wallet_round(code, amount)) for code, amount in balances.items()])
+        c.execute("INSERT INTO wallet_meta(user_id,is_new_player,foreign_grant_done) VALUES(?,?,?)",
+                  (user_id, is_new, foreign_done))
+        c.commit()
+    return True
+
+
+def wallets_finish_starter_grant(user_id: int, rates: dict[str, float]) -> bool:
+    """Complete a new player's foreign-currency starter grant after rates arrive."""
+    c = connect()
+    with _lock:
+        c.execute("BEGIN IMMEDIATE")
+        meta = c.execute("SELECT * FROM wallet_meta WHERE user_id=?", (user_id,)).fetchone()
+        if not meta or not meta["is_new_player"] or meta["foreign_grant_done"]:
+            c.commit()
+            return False
+        for code in ("USD", "EUR", "GBP", "CNY", "JPY", "KZT", "TRY"):
+            amount = _wallet_round(code, 15000.0 * float(rates[code]))
+            c.execute("UPDATE player_wallets SET amount=amount+? WHERE user_id=? AND currency=?",
+                      (amount, user_id, code))
+        c.execute("UPDATE players SET balance=balance+1050 WHERE user_id=?", (user_id,))
+        c.execute("UPDATE wallet_meta SET foreign_grant_done=1 WHERE user_id=?", (user_id,))
+        c.commit()
+        return True
+
+
+def wallet_get(user_id: int, currency: str) -> float:
+    row = connect().execute("SELECT amount FROM player_wallets WHERE user_id=? AND currency=?",
+                            (user_id, currency)).fetchone()
+    return round(float(row["amount"]), 2) if row else 0.0
+
+
+def wallets_get(user_id: int) -> dict[str, float]:
+    rows = connect().execute("SELECT currency,amount FROM player_wallets WHERE user_id=?", (user_id,)).fetchall()
+    return {row["currency"]: round(float(row["amount"]), 2) for row in rows}
+
+
+def wallet_meta_get(user_id: int) -> dict | None:
+    row = connect().execute("SELECT * FROM wallet_meta WHERE user_id=?", (user_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def wallet_apply_deltas(user_id: int, deltas: list[dict]) -> bool:
+    """Apply one or more signed wallet movements atomically; reject overdrafts."""
+    c = connect()
+    with _lock:
+        c.execute("BEGIN IMMEDIATE")
+        current = wallets_get(user_id)
+        totals = dict(current)
+        for delta in deltas:
+            code = str(delta.get("currency", ""))
+            amount = _wallet_round(code, float(delta.get("amount", 0)))
+            if code not in {"RUB", "USD", "EUR", "GBP", "CNY", "JPY", "KZT", "TRY"}:
+                c.rollback()
+                return False
+            totals[code] = _wallet_round(code, totals.get(code, 0.0) + amount)
+        if any(value < -0.005 for value in totals.values()):
+            c.rollback()
+            return False
+        for code, value in totals.items():
+            c.execute("""INSERT INTO player_wallets(user_id,currency,amount) VALUES(?,?,?)
+                         ON CONFLICT(user_id,currency) DO UPDATE SET amount=excluded.amount""",
+                      (user_id, code, _wallet_round(code, max(0.0, value))))
+        c.commit()
+        return True
+
+
+def wallet_exchange(user_id: int, from_code: str, to_code: str,
+                    debit: float, credit: float) -> bool:
+    if from_code == to_code or debit <= 0 or credit <= 0:
+        return False
+    return wallet_apply_deltas(user_id, [
+        {"currency": from_code, "amount": -round(debit, 2)},
+        {"currency": to_code, "amount": round(credit, 2)},
+    ])
+
+
+def fx_cache_get() -> dict | None:
+    row = connect().execute("SELECT rates_json,updated_at,source FROM fx_cache WHERE id=1").fetchone()
+    if not row:
+        return None
+    try:
+        return {"rates": json.loads(row["rates_json"]), "updated_at": int(row["updated_at"]),
+                "source": row["source"]}
+    except (TypeError, ValueError):
+        return None
+
+
+def fx_cache_set(rates: dict[str, float], updated_at: int, source: str) -> None:
+    c = connect()
+    with _lock:
+        c.execute("""INSERT INTO fx_cache(id,rates_json,updated_at,source) VALUES(1,?,?,?)
+                     ON CONFLICT(id) DO UPDATE SET rates_json=excluded.rates_json,
+                     updated_at=excluded.updated_at,source=excluded.source""",
+                  (_jdumps(rates), int(updated_at), str(source)))
+        c.commit()
+
+
+def touch_player(user_id: int, *, wallet_deltas: list[dict] | None = None, **fields) -> bool:
+    """Update player and wallet atomically. Legacy balance deltas map to RUB at 100 RUB/unit."""
     allowed = {
         "username", "first_name", "last_name", "photo_url", "balance", "coins", "xp",
         "streak", "last_day", "ref_count", "ref_by", "is_admin", "subscribed", "banned",
@@ -329,13 +478,39 @@ def touch_player(user_id: int, **fields) -> None:
             v = int(v)
         sets.append(f"{k}=?")
         vals.append(v)
-    if not sets:
-        return
-    vals.append(user_id)
     c = connect()
     with _lock:
-        c.execute(f"UPDATE players SET {', '.join(sets)} WHERE user_id=?", tuple(vals))
+        c.execute("BEGIN IMMEDIATE")
+        old = c.execute("SELECT balance FROM players WHERE user_id=?", (user_id,)).fetchone()
+        if not old:
+            c.rollback()
+            return False
+        deltas = list(wallet_deltas or [])
+        if wallet_deltas is None and "balance" in fields:
+            diff = float(fields["balance"]) - float(old["balance"] or 0)
+            if abs(diff) >= 0.005:
+                deltas.append({"currency": "RUB", "amount": round(diff * 100.0, 2)})
+        current = {r["currency"]: float(r["amount"]) for r in c.execute(
+            "SELECT currency,amount FROM player_wallets WHERE user_id=?", (user_id,)).fetchall()}
+        totals = dict(current)
+        for delta in deltas:
+            code = str(delta.get("currency", ""))
+            if code not in {"RUB", "USD", "EUR", "GBP", "CNY", "JPY", "KZT", "TRY"}:
+                c.rollback()
+                return False
+            totals[code] = _wallet_round(code, totals.get(code, 0.0) + float(delta.get("amount", 0)))
+        if any(v < -0.005 for v in totals.values()):
+            c.rollback()
+            return False
+        for code, amount in totals.items():
+            c.execute("""INSERT INTO player_wallets(user_id,currency,amount) VALUES(?,?,?)
+                         ON CONFLICT(user_id,currency) DO UPDATE SET amount=excluded.amount""",
+                      (user_id, code, _wallet_round(code, max(0.0, amount))))
+        if sets:
+            vals.append(user_id)
+            c.execute(f"UPDATE players SET {', '.join(sets)} WHERE user_id=?", tuple(vals))
         c.commit()
+        return True
 
 
 def create_player(user_id: int, **profile) -> dict:
@@ -433,14 +608,19 @@ def find_player_by_username(username: str) -> dict | None:
 
 def admin_grant_balance(by_id: int, to_id: int, currency: str,
                         amount_native: float, amount_units: float) -> float:
-    """Атомарно зачислить внутренний баланс и записать аудит-проводку."""
+    """Atomically credit the selected currency wallet and record the grant."""
     c = connect()
     with _lock:
+        c.execute("BEGIN IMMEDIATE")
         row = c.execute("SELECT balance FROM players WHERE user_id=?", (to_id,)).fetchone()
         if not row:
+            c.rollback()
             raise ValueError("player_not_found")
         new_balance = round(float(row["balance"] or 0) + float(amount_units), 2)
         c.execute("UPDATE players SET balance=? WHERE user_id=?", (new_balance, to_id))
+        c.execute("""INSERT INTO player_wallets(user_id,currency,amount) VALUES(?,?,?)
+                     ON CONFLICT(user_id,currency) DO UPDATE SET amount=amount+excluded.amount""",
+                  (to_id, currency, _wallet_round(currency, float(amount_native))))
         c.execute("""INSERT INTO admin_grants
                      (by_id,to_id,currency,amount_native,amount_units,created_at)
                      VALUES (?,?,?,?,?,?)""",
