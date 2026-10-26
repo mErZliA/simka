@@ -1,0 +1,5 @@
+telethon>=1.36.0
+python-socks[asyncio]>=2.4.4
+aiohttp>=3.10.5
+aiohttp-socks>=0.10.1
+python-dotenv>=1.0.1

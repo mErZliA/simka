@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#060a17">
+<title>SIM Roulette</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="stylesheet" href="/static/style.css?v=9">
+</head>
+<body>
+
+<!-- живой фон -->
+<div id="aurora"><i></i><i></i><i></i></div>
+
+<!-- BOOT -->
+<div id="boot">
+  <div class="bootLogo">SIM ROULETTE</div>
+  <div class="spinner"></div>
+  <div class="lbl">Загружаем игру…</div>
+</div>
+
+<!-- ================= APP ================= -->
+<div id="app" class="hide">
+
+  <!-- header -->
+  <div id="hdr">
+    <button id="hamb" aria-label="Меню"><span></span><span></span><span></span></button>
+    <div class="hdrBrand"><span class="brandMark">🎰</span><span class="brandTxt">SIM <b>ROULETTE</b></span></div>
+    <div id="userbox">
+      <div id="hdrRight">
+        <div id="userrow">
+          <div id="uname">Игрок</div>
+          <img id="avatar" alt="">
+        </div>
+        <div class="hdrPills">
+          <div id="money"><span class="c">💰</span><span id="moneyVal">0</span></div>
+          <div id="lvl">Ур. 0</div>
+          <button id="topgear" title="Настройки">⚙️</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- админский баннер техперерыва -->
+  <div id="adminMaintBar" class="hide">
+    <div class="ambIc">🛠</div>
+    <div class="ambTxt"><b id="ambTitle">Технический перерыв</b><span id="ambSub">Игроки видят заглушку</span></div>
+    <button id="ambStop" class="hide">Открыть игру</button>
+  </div>
+
+  <!-- таймер предупреждения -->
+  <div id="mtimer" class="hide">⚠️ <span id="mtimerTxt">Техперерыв через 00:00</span></div>
+
+  <!-- banners -->
+  <div id="banners">
+    <div id="bannerTrack"></div>
+    <div id="bannerDots"></div>
+  </div>
+
+  <!-- stage -->
+  <div id="stage">
+    <div id="reelWrap">
+      <div class="reelEdge top"></div>
+      <div id="reelStrip">
+        <div id="reelNum">+7 (999) 000-00-0</div>
+        <div id="reelSub">Выбери страну и жми «Крутить»</div>
+      </div>
+      <div class="reelEdge bottom"></div>
+    </div>
+
+    <button id="spinBtn">КРУТИТЬ<small id="spinCost">20</small></button>
+
+    <div id="ctrls">
+      <button class="ctrl" id="ctrlCountry">
+        <span class="lab">Страна</span>
+        <span class="val"><span id="ctryFlag">🇷🇺</span><span id="ctryName">Россия</span></span>
+      </button>
+      <button class="ctrl" id="ctrlCat">
+        <span class="lab">Категория</span>
+        <span class="val" id="catVal">Любая</span>
+      </button>
+      <button class="ctrl small" id="ctrlMult">
+        <span class="lab">×N</span>
+        <span class="val" id="multVal">1</span>
+      </button>
+    </div>
+
+    <div id="quick">
+      <button class="qbtn" id="btnFree">⚡ Бесплатный <span class="cd" id="freeCd"></span></button>
+      <button class="qbtn" id="btnBonus">🎁 Бонус дня</button>
+    </div>
+  </div>
+
+  <!-- нижняя навигация -->
+  <nav id="tabbar">
+    <button class="tab on" data-tab="home"><span class="ti">🎰</span><span>Игра</span></button>
+    <button class="tab" data-open="inv"><span class="ti">📱</span><span>Коллекция</span></button>
+    <button class="tab" data-open="market"><span class="ti">🏪</span><span>Рынок</span></button>
+    <button class="tab" data-open="tasks"><span class="ti">🎯</span><span>Задания</span></button>
+    <button class="tab" data-open="profile"><span class="ti">👤</span><span>Профиль</span></button>
+  </nav>
+</div>
+
+<!-- ================= MENU ================= -->
+<div class="ov" id="menu">
+  <div id="menuPanel">
+    <div id="menuHead">
+      <div class="logo">SIM ROULETTE</div>
+      <button id="menuClose">✕</button>
+    </div>
+    <input id="menuSearch" placeholder="🔎 Найти раздел…">
+
+    <div id="vipPromo">
+      <div class="tag">VIP</div>
+      <h3>⭐ VIP Магазин</h3>
+      <p>Удача ×2/×4/×10, коины, донат-баланс — за Telegram Stars</p>
+      <button class="go" data-open="vip">Открыть магазин</button>
+    </div>
+
+    <div class="mgrid" id="menuGrid">
+      <button class="mtile" data-open="inv" data-kw="коллекция номера инвентарь">
+        <span class="ic">📱</span><span class="nm">Коллекция</span><span class="ds">Твои номера</span>
+      </button>
+      <button class="mtile" data-open="market" data-kw="рынок магазин купить продать обмен">
+        <span class="ic">🏪</span><span class="nm">Рынок</span><span class="ds">Продажа и покупка</span>
+      </button>
+      <button class="mtile" data-open="rating" data-kw="рейтинг лидеры топ богатые">
+        <span class="ic">🏆</span><span class="nm">Рейтинг</span><span class="ds">Лидеры</span>
+      </button>
+      <button class="mtile" data-open="tasks" data-kw="задания квесты достижения награды">
+        <span class="ic">🎯</span><span class="nm">Задания</span><span class="ds">Награды</span>
+      </button>
+      <button class="mtile" data-open="upg" data-kw="апгрейд улучшение прокачка">
+        <span class="ic">⬆️</span><span class="nm">Апгрейд</span><span class="ds">Улучши номер</span>
+      </button>
+      <button class="mtile" data-open="friends" data-kw="друзья рефералы реферальная приглашение">
+        <span class="ic">👥</span><span class="nm">Друзья</span><span class="ds">Приглашай</span>
+      </button>
+      <button class="mtile" data-open="daily" data-kw="ежедневный бонус подарок стрик">
+        <span class="ic">🎁</span><span class="nm">Бонус дня</span><span class="ds">Каждый день</span>
+      </button>
+      <button class="mtile" data-open="coupons" data-kw="купоны промокод код">
+        <span class="ic">🎟️</span><span class="nm">Купоны</span><span class="ds">Активировать код</span>
+      </button>
+      <button class="mtile wide" data-open="vip" data-kw="vip магазин звёзды stars донат бонусы">
+        <span class="ic">⭐</span><span><span class="nm">VIP Магазин</span><br><span class="ds">Бонусы за Telegram Stars</span></span>
+      </button>
+      <button class="mtile" data-open="settings" data-kw="настройки звук вибрация эффекты оформление тема">
+        <span class="ic">⚙️</span><span class="nm">Настройки</span><span class="ds">Звук, эффекты</span>
+      </button>
+      <button class="mtile" data-open="profile" data-kw="профиль статистика аккаунт">
+        <span class="ic">👤</span><span class="nm">Профиль</span><span class="ds">Статистика</span>
+      </button>
+      <button class="mtile admin hide" id="tileAdmin" data-open="admin" data-kw="админ админка панель техперерыв">
+        <span class="ic">🛠</span><span class="nm">Админка</span><span class="ds">Панель управления</span>
+      </button>
+    </div>
+    <div id="menuEmpty" class="empty hide"><div class="ic">🔍</div>Ничего не найдено</div>
+  </div>
+</div>
+
+<!-- ================= SHEET ================= -->
+<div class="ov" id="sheet">
+  <div id="sheetPanel">
+    <div class="grab"></div>
+    <div id="sheetBody"></div>
+  </div>
+</div>
+
+<!-- ================= PANEL ================= -->
+<div class="ov" id="panel">
+  <div id="panelInner">
+    <div id="panelTop">
+      <button id="panelBack">←</button>
+      <div id="panelTitle">Раздел</div>
+    </div>
+    <input id="panelSearch" class="hide" placeholder="🔎 Поиск…">
+    <div id="panelBody"></div>
+  </div>
+</div>
+
+<!-- ================= MAINTENANCE ================= -->
+<div id="maintBlock" class="hide">
+  <div class="maintBg"><i></i><i></i><i></i></div>
+  <div class="maintCard">
+    <div class="maintLogo">SIM ROULETTE</div>
+    <div class="maintIcon">🔧</div>
+    <h1>Технический перерыв</h1>
+    <p class="maintDesc" id="maintMsg">Плановые технические работы. Скоро вернёмся!</p>
+
+    <div class="maintTimerBox">
+      <div class="maintTimerLbl" id="maintTimerLbl">До окончания работ</div>
+      <div class="maintTimer" id="maintTimer">--:--</div>
+    </div>
+
+    <div class="maintProgress" id="maintProgressWrap"><i id="maintProgress" style="width:0%"></i></div>
+    <div class="maintProgressLbl" id="maintProgressLbl">Работы выполняются по плану</div>
+
+    <div class="maintSteps" id="maintSteps">
+      <div class="maintStep done"><span class="sd">✓</span><span>Сохранение данных</span></div>
+      <div class="maintStep now"><span class="sd">⚙</span><span>Обновление</span></div>
+      <div class="maintStep"><span class="sd">3</span><span>Проверка</span></div>
+    </div>
+
+    <div class="maintActions">
+      <a id="maintLink" href="#" target="_blank" rel="noopener">📣 Новостной канал</a>
+      <button id="maintRefresh">🔄 Проверить снова</button>
+    </div>
+    <div class="maintFoot">Спасибо за терпение · Мы скоро вернёмся ✨</div>
+  </div>
+</div>
+
+<!-- ================= NEWS POPUP ================= -->
+<div class="ov" id="newsPop">
+  <div class="np">
+    <div class="ic">⚠️</div>
+    <h3>Скоро техперерыв</h3>
+    <p id="newsMsg">Скоро начнутся технические работы.</p>
+    <div class="cd" id="newsCd">00:00</div>
+    <button class="btn" id="newsClose">Понятно, играть дальше</button>
+  </div>
+</div>
+
+<!-- ================= CONFIRM ================= -->
+<div class="ov" id="confirmPop">
+  <div class="np">
+    <div class="ic">❓</div>
+    <h3 id="confirmTitle">Подтвердите действие</h3>
+    <p id="confirmText">Вы уверены?</p>
+    <div class="cfRow">
+      <button class="btn ghost" id="confirmNo">Отмена</button>
+      <button class="btn bad" id="confirmYes">Да</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= ONBOARDING ================= -->
+<div class="ov" id="onboard">
+  <div class="obCard">
+    <div class="obArt" id="obArt">🎰</div>
+    <h2 id="obTitle">Добро пожаловать!</h2>
+    <p id="obText">SIM Roulette — коллекционная игра с редкими телефонными номерами со всего мира.</p>
+    <div class="obDots" id="obDots"><i class="on"></i><i></i><i></i></div>
+    <button class="btn" id="obNext">Далее</button>
+    <button class="btn ghost" id="obSkip">Пропустить</button>
+  </div>
+</div>
+
+<!-- toast -->
+<div id="toast"></div>
+
+<script src="/static/banner-config.js?v=2"></script>
+<script src="/static/app.js?v=11"></script>
+</body>
+</html>
