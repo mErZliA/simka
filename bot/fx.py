@@ -1,19 +1,13 @@
-"""Live reference exchange rates for the currencies represented in the game.
+"""Fixed game exchange rates for the currencies represented in the game.
 
-The public exchangerate-api endpoint refreshes daily. These are indicative
-market rates, not guaranteed executable settlement quotes.
+These are gameplay values, not current market rates. They are deliberately
+static and never fetched from an external provider.
 """
 from __future__ import annotations
 
-import asyncio
 import math
-import os
 import time
 from typing import Any
-
-import aiohttp
-
-from bot import db
 
 BASE = "RUB"
 CURRENCIES = [
@@ -29,13 +23,23 @@ CURRENCIES = [
 CURRENCY_CODES = {item["code"] for item in CURRENCIES}
 CURRENCY_BY_COUNTRY = {item["country"]: item["code"] for item in CURRENCIES}
 CURRENCY_BY_CODE = {item["code"]: item for item in CURRENCIES}
-FX_URL = os.getenv("FX_API_URL", "https://open.er-api.com/v6/latest/RUB")
-CACHE_TTL_SECONDS = 6 * 60 * 60
+# Rates are expressed as foreign-currency units per one RUB.
+# Thus 1 USD = 66.67 RUB means 1 RUB = 1/66.67 USD.
+FIXED_RATES = {
+    "RUB": 1.0,
+    "USD": 1 / 66.67,
+    "EUR": 1 / 66.67,
+    "GBP": 1 / 83.33,
+    "CNY": 0.1,
+    "JPY": 2.0,
+    "KZT": 5.0,
+    "TRY": 0.4,
+}
+FIXED_SOURCE = "Фиксированные игровые курсы"
+# Retained only for validating legacy/provider payloads in compatibility tests;
+# get_rates never uses this validation or contacts the provider.
 MAX_STALE_SECONDS = 72 * 60 * 60
-_timeout = aiohttp.ClientTimeout(total=3, connect=2)
-_lock = asyncio.Lock()
 _cache: dict[str, Any] | None = None
-_failure_until = 0.0
 
 
 class FXUnavailable(RuntimeError):
@@ -83,46 +87,19 @@ def _validate_rates(payload: dict) -> dict:
 
 
 async def get_rates(force: bool = False) -> dict:
-    """Return fresh rates, using persisted cache only when it is at most 72h old."""
-    global _cache, _failure_until
-    now = int(time.time())
-    if _cache and not force and now - int(_cache["fetched_at"]) < CACHE_TTL_SECONDS:
-        return dict(_cache)
-    async with _lock:
-        now = int(time.time())
-        if _cache and not force and now - int(_cache["fetched_at"]) < CACHE_TTL_SECONDS:
-            return dict(_cache)
-        if not force and time.monotonic() < _failure_until:
-            persisted = db.fx_cache_get()
-            if persisted and now - int(persisted["updated_at"]) <= MAX_STALE_SECONDS:
-                snapshot = {**persisted, "fetched_at": now, "stale": True}
-                _cache = snapshot
-                return dict(snapshot)
-            raise FXUnavailable("rate_provider_unavailable")
-        try:
-            async with aiohttp.ClientSession(timeout=_timeout) as session:
-                async with session.get(FX_URL) as response:
-                    response.raise_for_status()
-                    data = await response.json()
-            snapshot = _validate_rates(data)
-            snapshot["fetched_at"] = now
-            db.fx_cache_set(snapshot["rates"], snapshot["updated_at"], snapshot["source"])
-            _cache = snapshot
-            _failure_until = 0.0
-            return dict(snapshot)
-        except Exception as exc:
-            _failure_until = time.monotonic() + 30.0
-            persisted = db.fx_cache_get()
-            if persisted and now - int(persisted["updated_at"]) <= MAX_STALE_SECONDS:
-                snapshot = {**persisted, "fetched_at": now, "stale": True}
-                _cache = snapshot
-                return dict(snapshot)
-            if isinstance(exc, FXUnavailable):
-                raise
-            raise FXUnavailable("rate_provider_unavailable") from exc
+    """Return the fixed gameplay rates; never call an external FX provider."""
+    global _cache
+    if _cache is None:
+        _cache = {
+            "rates": dict(FIXED_RATES),
+            "updated_at": 0,
+            "source": FIXED_SOURCE,
+            "fetched_at": 0,
+            "stale": False,
+        }
+    return dict(_cache)
 
 
 def reset_cache_for_tests() -> None:
-    global _cache, _failure_until
+    global _cache
     _cache = None
-    _failure_until = 0.0

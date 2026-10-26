@@ -832,7 +832,7 @@ RENDER.currencies=async(body)=>{
       <div id="fxQuote" class="fx-quote"></div><div id="fxRate" class="fx-rate"></div>
       <button class="btn good" id="fxSubmit" style="width:100%;padding:14px;margin-top:14px">Обменять</button>
     </div>
-    <div class="fx-foot">Источник: ${esc(data.source)} · данные на ${new Date(data.updated_at*1000).toLocaleString("ru-RU")}${data.stale?" · сохранённый курс":""}</div>`;
+    <div class="fx-foot">${esc(data.source)}${data.updated_at?` · данные на ${new Date(data.updated_at*1000).toLocaleString("ru-RU")}`:" · не является рыночной котировкой"}${data.stale?" · сохранённый курс":""}</div>`;
   $("fxFrom").value="RUB"; $("fxTo").value="USD";
   $("fxAmount").oninput=update; $("fxFrom").onchange=update; $("fxTo").onchange=update;
   $("fxSwap").onclick=()=>{ const a=$("fxFrom").value; $("fxFrom").value=$("fxTo").value; $("fxTo").value=a; update(); };
