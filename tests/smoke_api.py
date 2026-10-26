@@ -217,7 +217,9 @@ check("settings", st == 200, f"sound={d.get('settings',{}).get('sound_on')} thm=
 
 print("== рейтинг ==")
 st, d = call("GET", "/api/rating")
-check("rating", st == 200 and len(d.get("money", [])) >= 1, f"players={len(d.get('money', []))}")
+admin_in_rating = any(row.get("user_id") == UID for row in d.get("money", []) + d.get("numbers", []))
+check("рейтинги исключают администраторов", st == 200 and not admin_in_rating,
+      f"money={len(d.get('money', []))} numbers={len(d.get('numbers', []))}")
 
 print("== админка: статистика ==")
 st, d = call("GET", f"/api/admin/stats?uid={UID}")

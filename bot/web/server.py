@@ -1331,7 +1331,10 @@ async def api_settings(request: web.Request) -> web.Response:
 
 # ---------------------------------------------------------------- рейтинг
 async def api_rating(request: web.Request) -> web.Response:
-    players = db.list_players()
+    # Администраторы не участвуют ни в одном рейтинге, включая рейтинг номеров.
+    admin_ids = set(ADMIN_IDS) | set(db.admin_list())
+    players = [pl for pl in db.list_players()
+               if not pl.get("is_admin") and pl["user_id"] not in admin_ids]
     by_money = sorted(players, key=lambda x: -(x["balance"] or 0))[:15]
     top_numbers = []
     for pl in players:
