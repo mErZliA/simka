@@ -1,3 +1,5 @@
+import asyncio
+
 from telethon import events
 from telethon.tl import types
 
@@ -41,27 +43,20 @@ def register(bot):
 
     @bot.on(events.NewMessage(pattern=r"^/start(?:\s|$)"))
     async def cmd_start(event: events.NewMessage.Event) -> None:
-        sender = await event.get_sender()
+        sender = event.sender
         name = getattr(sender, "first_name", "друг") or "друг"
-        subscribed = await check_subscription(event.sender_id)
-
+        # Warm the server-side subscription cache without delaying the reply.
+        asyncio.create_task(check_subscription(event.sender_id))
         header = "🎰 **SIM Roulette**\n"
         hello = f"Привет, {name}! 👋\n\n"
-
-        if subscribed:
-            body = (
-                "Добро пожаловать в мир коллекционных SIM-номеров!\n\n"
-                "🔹 Крути рулетку и собирай редкие номера\n"
-                "🔹 Продавай, обменивайся и апгрейди коллекцию\n"
-                "🔹 Прокачивай уровень и выполняй задания\n"
-                "🔹 Соревнуйся с другими игроками в топе\n"
-            )
-        else:
-            body = (
-                "Чтобы начать играть, подпишись на новостной канал — "
-                "там анонсы, акции и промокоды.\n\n"
-                f"📣 Канал: {CHANNEL}\n"
-            )
+        body = (
+            "Добро пожаловать в мир коллекционных SIM-номеров!\n\n"
+            "🔹 Крути рулетку и собирай редкие номера\n"
+            "🔹 Продавай, обменивайся и улучшай коллекцию\n"
+            "🔹 Прокачивай уровень и выполняй задания\n"
+            "🔹 Соревнуйся с другими игроками в топе\n\n"
+            f"Для входа подпишись на канал {CHANNEL} — проверка произойдёт в приложении."
+        )
 
         markup = _inline_markup(
             _row(_webapp_button("🎰 Играть", WEBAPP_URL)),

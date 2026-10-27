@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, patch
 
 from bot import db, game
 from bot.backup import create_backup
+from bot.utils.command_guard import CommandFloodGuard
 from bot import fx
 from bot.utils import security
 from bot.web import server
@@ -84,6 +85,21 @@ class InitDataTests(unittest.TestCase):
         with patch.object(security, "BOT_TOKEN", token), patch.object(security, "INITDATA_MAX_AGE", 3600), \
              patch.object(security, "INITDATA_FUTURE_SKEW", 60):
             self.assertIsNone(security.verify_init_data(raw))
+
+
+class CommandFloodGuardTests(unittest.TestCase):
+    def test_allows_short_burst_then_drops_until_refill(self):
+        guard = CommandFloodGuard(capacity=3, refill_per_second=1)
+        self.assertTrue(all(guard.allow(101, "/start", now=0) for _ in range(3)))
+        self.assertFalse(guard.allow(101, "/help", now=0))
+        self.assertTrue(guard.allow(101, "/app", now=1))
+
+    def test_ignores_regular_messages_and_isolates_users(self):
+        guard = CommandFloodGuard(capacity=1, refill_per_second=0.5)
+        self.assertTrue(guard.allow(101, "hello", now=0))
+        self.assertTrue(guard.allow(101, "/start", now=0))
+        self.assertFalse(guard.allow(101, "/help", now=0))
+        self.assertTrue(guard.allow(202, "/help", now=0))
 
 
 class RateLimitTests(unittest.TestCase):

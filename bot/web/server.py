@@ -59,6 +59,20 @@ def _rate_limited(key: str, weight: int, capacity: int) -> int:
 
 
 @web.middleware
+async def compression_middleware(request: web.Request, handler):
+    response = await handler(request)
+    content_type = response.content_type or ""
+    compressible = (content_type.startswith(("text/", "application/json", "application/javascript"))
+                    or content_type.endswith("+json"))
+    accepts_gzip = "gzip" in request.headers.get("Accept-Encoding", "").lower()
+    length = response.content_length
+    if accepts_gzip and compressible and (length is None or length >= 512):
+        response.enable_compression()
+        response.headers["Vary"] = "Accept-Encoding"
+    return response
+
+
+@web.middleware
 async def request_error_middleware(request: web.Request, handler):
     request_id = uuid.uuid4().hex[:12]
     try:
@@ -1716,13 +1730,16 @@ async def index(request: web.Request) -> web.Response:
     path = Path(WEBAPP_DIR) / "index.html"
     if not path.exists():
         return web.Response(text="WebApp не найден", status=404)
-    return web.FileResponse(path)
+    response = web.FileResponse(path)
+    response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 async def start_server() -> web.AppRunner:
     db.connect()
     app = web.Application(client_max_size=2 * 1024 * 1024,
-                          middlewares=[request_error_middleware, subscription_middleware])
+                          middlewares=[request_error_middleware, compression_middleware,
+                                       subscription_middleware])
     if APP_ENV == "production":
         app.on_startup.append(_backup_start)
         app.on_cleanup.append(_backup_stop)
@@ -1776,7 +1793,7 @@ async def start_server() -> web.AppRunner:
 
     # статика
     app.router.add_get("/", index)
-    app.router.add_static("/static", WEBAPP_DIR, show_index=False)
+    app.router.add_static("/static", WEBAPP_DIR, show_index=False, max_age=86400)
 
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()

@@ -1,6 +1,6 @@
 import asyncio
 
-from telethon import TelegramClient
+from telethon import TelegramClient, events
 
 from bot import db
 from bot.config import ADMIN_IDS, API_ID, API_HASH, BOT_TOKEN, PROXY, validate
@@ -9,6 +9,7 @@ from bot.handlers import help as h_help
 from bot.handlers import shop as h_shop
 from bot.handlers import start as h_start
 from bot.utils.logger import setup_logger
+from bot.utils.command_guard import drop_flooded_commands
 from bot.web import server as web_server
 
 log = setup_logger()
@@ -37,6 +38,9 @@ async def main() -> None:
 
     me = await bot.get_me()
     log.info("✅ Бот @%s запущен", me.username)
+
+    # First handler drops command floods before they reach command/API handlers.
+    bot.add_event_handler(drop_flooded_commands, events.NewMessage(incoming=True))
 
     # Регистрация хендлеров
     h_start.register(bot)
