@@ -122,6 +122,8 @@ def _init(c: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_numbers_player ON numbers(player_id);
         CREATE INDEX IF NOT EXISTS idx_numbers_status ON numbers(status);
+        CREATE INDEX IF NOT EXISTS idx_numbers_inventory
+            ON numbers(player_id, status, created_at DESC);
 
         CREATE TABLE IF NOT EXISTS market (
             id         TEXT PRIMARY KEY,
@@ -132,6 +134,10 @@ def _init(c: sqlite3.Connection) -> None:
             created_at INTEGER DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_market_seller ON market(seller_id);
+        CREATE INDEX IF NOT EXISTS idx_market_created
+            ON market(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_market_number
+            ON market(number_id);
 
         CREATE TABLE IF NOT EXISTS inbox (
             id         TEXT PRIMARY KEY,
@@ -144,6 +150,8 @@ def _init(c: sqlite3.Connection) -> None:
             created_at INTEGER DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_inbox_to ON inbox(to_id);
+        CREATE INDEX IF NOT EXISTS idx_inbox_recipient_created
+            ON inbox(to_id, created_at);
 
         CREATE TABLE IF NOT EXISTS admins (
             user_id    INTEGER PRIMARY KEY,
