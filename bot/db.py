@@ -50,10 +50,13 @@ def connect() -> sqlite3.Connection:
             os.chmod(DB_PATH, 0o600)
         except OSError:
             pass
-        _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        _conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10.0)
         _conn.row_factory = sqlite3.Row
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.execute("PRAGMA foreign_keys=ON")
+        _conn.execute("PRAGMA busy_timeout=10000")
+        _conn.execute("PRAGMA cache_size=-16000")
+        _conn.execute("PRAGMA temp_store=MEMORY")
         _init(_conn)
     return _conn
 

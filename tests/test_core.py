@@ -1,6 +1,7 @@
 """Fast, offline regression tests for economic rules, task resets and backups."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -11,11 +12,15 @@ import time
 import unittest
 from pathlib import Path
 from urllib.parse import urlencode
+
+from aiohttp import ClientSession
+from aiohttp.test_utils import TestServer
 from unittest.mock import AsyncMock, patch
 
 from bot import db, game
 from bot.backup import create_backup
 from bot.utils.command_guard import CommandFloodGuard
+from bot.utils import subscription
 from bot import fx
 from bot.utils import security
 from bot.web import server
@@ -117,6 +122,24 @@ class RateLimitTests(unittest.TestCase):
         retry = server._rate_limited(key, 2, 3)
         self.assertGreaterEqual(retry, 1)
         server._RATE_BUCKETS.pop(key, None)
+
+
+class StaticCompressionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_large_static_script_is_gzipped_and_cached(self):
+        asset = Path(__file__).resolve().parents[1] / "webapp" / "app.js"
+        app = server.web.Application(middlewares=[server.compression_middleware])
+        async def serve_asset(_request):
+            return server.web.FileResponse(asset)
+        app.router.add_get("/static/app.js", serve_asset)
+        async with TestServer(app) as test_server:
+            async with ClientSession(auto_decompress=False) as client:
+                async with client.get(test_server.make_url("/static/app.js"),
+                                      headers={"Accept-Encoding": "gzip"}) as response:
+                    body = await response.read()
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(response.headers.get("Content-Encoding"), "gzip")
+                    self.assertEqual(response.headers.get("Cache-Control"), "public, max-age=86400")
+                    self.assertLess(len(body), asset.stat().st_size)
 
 
 class PeriodTaskTests(unittest.TestCase):
@@ -273,6 +296,20 @@ class CurrencyAPITests(unittest.IsolatedAsyncioTestCase):
                     db._conn.close()
                 db._conn = old_conn
                 db.DB_PATH = old_path
+
+
+class SubscriptionSingleflightTests(unittest.IsolatedAsyncioTestCase):
+    async def test_parallel_checks_for_one_user_share_a_single_request(self):
+        uid = 77100
+        subscription._subscription_cache.pop(uid, None)
+        calls = AsyncMock(return_value=True)
+        with patch.object(subscription, "_fetch_subscription", new=calls):
+            results = await asyncio.gather(*(
+                subscription.check_subscription(uid) for _ in range(20)
+            ))
+        self.assertEqual(results, [True] * 20)
+        calls.assert_awaited_once_with(uid)
+        subscription._subscription_cache.pop(uid, None)
 
 
 class SubscriptionGateTests(unittest.IsolatedAsyncioTestCase):

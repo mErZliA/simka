@@ -12,6 +12,7 @@ import datetime as dt
 import json
 import logging
 import math
+import mimetypes
 import time
 import uuid
 from collections import deque
@@ -24,7 +25,7 @@ import bot.game as game
 import bot.fx as fx
 from bot.config import APP_ENV, ADMIN_IDS, BOT_TOKEN, CHANNEL, DEV_MODE, PORT, WEBAPP_DIR, WEBAPP_URL
 from bot.utils.security import verify_init_data
-from bot.utils.subscription import check_subscription
+from bot.utils.subscription import check_subscription, close_subscription_client
 from bot.utils.notify import notify_maintenance
 
 log = logging.getLogger("simroulette.web")
@@ -38,9 +39,13 @@ PENDING_TTL = 10 * 60 * 1000
 # Small per-process token buckets for expensive write endpoints.
 _RATE_BUCKETS: dict[str, deque] = {}
 _RATE_WINDOW = 60.0
+_RATE_LAST_PRUNE = 0.0
+_STATIC_TEXT_CACHE: dict[str, tuple[int, int, bytes]] = {}
+_STATIC_CACHE_LOCK = asyncio.Lock()
 
 
 def _rate_limited(key: str, weight: int, capacity: int) -> int:
+    global _RATE_LAST_PRUNE
     now = time.monotonic()
     bucket = _RATE_BUCKETS.setdefault(key, deque())
     while bucket and now - bucket[0][0] >= _RATE_WINDOW:
@@ -50,7 +55,8 @@ def _rate_limited(key: str, weight: int, capacity: int) -> int:
     if used + weight > capacity:
         return max(1, int(_RATE_WINDOW - (now - bucket[0][0]))) if bucket else 1
     bucket.append((now, weight))
-    if len(_RATE_BUCKETS) > 5000:
+    if len(_RATE_BUCKETS) > 5000 and now - _RATE_LAST_PRUNE >= _RATE_WINDOW:
+        _RATE_LAST_PRUNE = now
         for old_key, q in list(_RATE_BUCKETS.items()):
             while q and now - q[0][0] >= _RATE_WINDOW:
                 q.popleft()
@@ -59,17 +65,50 @@ def _rate_limited(key: str, weight: int, capacity: int) -> int:
     return 0
 
 
+async def _cached_static_bytes(path: Path) -> tuple[bytes, int]:
+    """Cache small text assets in memory so gzip doesn't reread them per request."""
+    stat = path.stat()
+    key = str(path.resolve())
+    cached = _STATIC_TEXT_CACHE.get(key)
+    if cached and cached[0] == stat.st_mtime_ns and cached[1] == stat.st_size:
+        return cached[2], stat.st_size
+    async with _STATIC_CACHE_LOCK:
+        stat = path.stat()
+        cached = _STATIC_TEXT_CACHE.get(key)
+        if cached and cached[0] == stat.st_mtime_ns and cached[1] == stat.st_size:
+            return cached[2], stat.st_size
+        body = await asyncio.to_thread(path.read_bytes)
+        _STATIC_TEXT_CACHE[key] = (stat.st_mtime_ns, stat.st_size, body)
+        return body, stat.st_size
+
+
 @web.middleware
 async def compression_middleware(request: web.Request, handler):
     response = await handler(request)
+    if request.path.startswith("/static/") and response.status == 200:
+        response.headers.setdefault("Cache-Control", "public, max-age=86400")
     content_type = response.content_type or ""
+    if isinstance(response, web.FileResponse):
+        content_type = mimetypes.guess_type(str(response._path))[0] or content_type
     compressible = (content_type.startswith(("text/", "application/json", "application/javascript"))
                     or content_type.endswith("+json"))
     accepts_gzip = "gzip" in request.headers.get("Accept-Encoding", "").lower()
-    length = response.content_length
-    if accepts_gzip and compressible and (length is None or length >= 512):
-        response.enable_compression()
-        response.headers["Vary"] = "Accept-Encoding"
+    if accepts_gzip and compressible and response.status == 200:
+        # FileResponse uses sendfile and bypasses aiohttp's response compressor.
+        # Wrap text assets as a regular response; the bytes are then memory-cached.
+        if isinstance(response, web.FileResponse) and request.method != "HEAD":
+            path = Path(response._path)
+            if path.stat().st_size >= 512:
+                body, _ = await _cached_static_bytes(path)
+                headers = {key: response.headers[key] for key in
+                           ("Cache-Control", "ETag", "Last-Modified", "Content-Disposition")
+                           if key in response.headers}
+                response = web.Response(body=body, status=response.status,
+                                        content_type=content_type, headers=headers)
+        length = response.content_length
+        if length is None or length >= 512:
+            response.enable_compression()
+            response.headers["Vary"] = "Accept-Encoding"
     return response
 
 
@@ -105,6 +144,10 @@ async def _backup_stop(app: web.Application) -> None:
             await task
         except asyncio.CancelledError:
             pass
+
+
+async def _subscription_stop(app: web.Application) -> None:
+    await close_subscription_client()
 
 # ---------------------------------------------------------------- товары VIP-магазина
 SKUS = [
@@ -1746,6 +1789,7 @@ async def start_server() -> web.AppRunner:
     app = web.Application(client_max_size=2 * 1024 * 1024,
                           middlewares=[request_error_middleware, compression_middleware,
                                        subscription_middleware])
+    app.on_cleanup.append(_subscription_stop)
     if APP_ENV == "production":
         app.on_startup.append(_backup_start)
         app.on_cleanup.append(_backup_stop)
@@ -1799,11 +1843,11 @@ async def start_server() -> web.AppRunner:
 
     # статика
     app.router.add_get("/", index)
-    app.router.add_static("/static", WEBAPP_DIR, show_index=False, max_age=86400)
+    app.router.add_static("/static", WEBAPP_DIR, show_index=False)
 
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    site = web.TCPSite(runner, "0.0.0.0", PORT, backlog=8192, reuse_address=True)
     await site.start()
     log.info("HTTP-сервер запущен на порту %s", PORT)
     return runner
