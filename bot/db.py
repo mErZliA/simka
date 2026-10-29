@@ -760,15 +760,24 @@ def market_listings(limit: int = 100) -> list[dict]:
     return out
 
 
-def market_add(listing_id: str, seller_id: int, number_id: str, price: float, kind: str = "sale") -> None:
+def market_add(listing_id: str, seller_id: int, number_id: str, price: float,
+               kind: str = "sale") -> bool:
+    """Atomically list an inventory number; reject stale/duplicate submissions."""
     c = connect()
     with _lock:
+        cur = c.execute(
+            "UPDATE numbers SET status=? WHERE id=? AND player_id=? AND status='inv'",
+            ("market" if kind == "sale" else "swap", number_id, seller_id),
+        )
+        if cur.rowcount != 1:
+            c.rollback()
+            return False
         c.execute(
-            "INSERT OR REPLACE INTO market (id, seller_id, number_id, price, kind, created_at) VALUES (?,?,?,?,?,?)",
+            "INSERT INTO market (id, seller_id, number_id, price, kind, created_at) VALUES (?,?,?,?,?,?)",
             (listing_id, seller_id, number_id, price, kind, now_ms()),
         )
-        c.execute("UPDATE numbers SET status=? WHERE id=?", ("market" if kind == "sale" else "swap", number_id))
         c.commit()
+        return True
 
 
 def market_remove(listing_id: str) -> dict | None:

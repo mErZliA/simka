@@ -107,7 +107,8 @@ WHEEL_STEP_BANDS = [
     {"max_chance": 10, "steps": 4},
     {"max_chance": 25, "steps": 3},
     {"max_chance": 45, "steps": 2},
-    {"max_chance": 90, "steps": 1},
+    {"max_chance": 70, "steps": 1},
+    {"max_chance": 90, "steps": 0},
 ]
 LUCK_MAX = 10
 
@@ -375,6 +376,14 @@ def upgrade_steps(chance: int) -> int:
     chance = clamp_chance(chance)
     return next(band["steps"] for band in WHEEL_STEP_BANDS
                 if chance <= band["max_chance"])
+
+
+def upgrade_price(current_price: float, chance: int) -> float:
+    """Upgrade value grows with risk; at 90% the minimum gain is exactly 10%."""
+    current = max(0.0, float(current_price))
+    chance = clamp_chance(chance)
+    factor = 2.0 - chance / 100.0  # 90% -> 1.10x; 5% -> 1.95x
+    return round(max(current * factor, current + 0.01), 2)
 
 
 def wheel_landing(chance: int, win: bool) -> float:

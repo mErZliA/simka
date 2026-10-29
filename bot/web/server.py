@@ -11,6 +11,7 @@ import asyncio
 import datetime as dt
 import json
 import logging
+import math
 import time
 import uuid
 from collections import deque
@@ -879,6 +880,10 @@ async def api_upgrade(request: web.Request) -> web.Response:
                 "p": game.price_for(digits, rarity, c), "op": op_id,
                 "features": analysis["features"], "score": analysis["score"],
             }
+        # Upgrade value is tied to the chosen risk, not the random digit score:
+        # at 90% a 100,000 RUB number becomes 110,000 RUB, never cheaper.
+        result_item["r"] = new_r
+        result_item["p"] = game.upgrade_price(num["p"], chance)
         db.add_number(uid, result_item)
         add_xp(p, 15)
         push_history(p, {"k": "upwin", "num": result_item["num"],
@@ -1023,12 +1028,13 @@ async def api_market_list(request: web.Request) -> web.Response:
         price = float(payload.get("price") or 0)
     except Exception:
         price = 0
-    if price <= 0:
+    if not math.isfinite(price) or price <= 0 or price > 1e15:
         return web.json_response({"ok": False, "error": "bad_price"}, status=400)
     kind = str(payload.get("kind") or "sale")
     if kind not in ("sale", "swap"):
         kind = "sale"
-    db.market_add(game.new_id(), uid, number_id, round(price, 2), kind)
+    if not db.market_add(game.new_id(), uid, number_id, round(price, 2), kind):
+        return web.json_response({"ok": False, "error": "listing_conflict"}, status=409)
     p["stats"]["listed"] = p["stats"].get("listed", 0) + 1
     _record_task_activity(uid, "listed", 1)
     add_xp(p, 3)

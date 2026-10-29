@@ -53,7 +53,14 @@ class UpgradeRuleTests(unittest.TestCase):
         steps = [game.upgrade_steps(chance) for chance in chances]
         self.assertTrue(all(a >= b for a, b in zip(steps, steps[1:])))
         self.assertEqual([game.upgrade_steps(x) for x in (5, 10, 11, 25, 26, 45, 46, 70, 90)],
-                         [4, 4, 3, 3, 2, 2, 1, 1, 1])
+                         [4, 4, 3, 3, 2, 2, 1, 1, 0])
+
+    def test_upgrade_price_never_decreases_and_90_percent_adds_ten_percent(self):
+        self.assertEqual(game.upgrade_price(100_000, 90), 110_000)
+        self.assertEqual(game.upgrade_price(230, 90), 253)
+        prices = [game.upgrade_price(230, chance) for chance in range(5, 91, 5)]
+        self.assertTrue(all(price >= 230 for price in prices))
+        self.assertTrue(all(a >= b for a, b in zip(prices, prices[1:])))
 
 
 class InitDataTests(unittest.TestCase):
@@ -373,6 +380,75 @@ class UpgradeAPITests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(all(amount == 0 for amount in db.wallets_get(uid).values()))
                 self.assertEqual(data["balance"], 0)
                 self.assertNotIn("cost", data)
+            finally:
+                if db._conn:
+                    db._conn.close()
+                db._conn = old_conn
+                db.DB_PATH = old_path
+
+
+    async def test_successful_90_percent_upgrade_preserves_rarity_and_adds_ten_percent(self):
+        with tempfile.TemporaryDirectory() as temp:
+            old_path, old_conn = db.DB_PATH, db._conn
+            db.DB_PATH, db._conn = Path(temp) / "upgrade-value.sqlite3", None
+            uid = 88202
+            item = {"id": "upgrade-value-number", "num": "+7 (900) 123-45-67",
+                    "k": "RU", "r": "rare", "p": 100_000, "op": "mts"}
+            try:
+                db.create_player(uid)
+                db.wallets_initialize(uid, is_new_player=False, legacy_balance=100)
+                db.add_number(uid, item)
+                player = db.player_dict(db.get_player(uid))
+
+                class Request:
+                    async def json(self):
+                        return {"number_id": item["id"], "chance": 90}
+
+                with patch.object(server, "_load_profile", return_value=(uid, player)), \
+                     patch.object(server, "maintenance_guard", return_value=None), \
+                     patch.object(game, "upgrade_result", return_value=(True, "rare")), \
+                     patch.object(game, "wheel_landing", return_value=100):
+                    response = await server.api_upgrade(Request())
+
+                data = json.loads(response.text)
+                self.assertEqual(response.status, 200)
+                self.assertTrue(data["win"])
+                self.assertEqual(data["steps"], 0)
+                self.assertEqual(data["item"]["r"], "rare")
+                self.assertEqual(data["item"]["p"], 110_000)
+            finally:
+                if db._conn:
+                    db._conn.close()
+                db._conn = old_conn
+                db.DB_PATH = old_path
+
+
+class MarketListingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_player_can_list_number_at_custom_price(self):
+        with tempfile.TemporaryDirectory() as temp:
+            old_path, old_conn = db.DB_PATH, db._conn
+            db.DB_PATH, db._conn = Path(temp) / "market-listing.sqlite3", None
+            uid = 88203
+            item = {"id": "market-custom-price", "num": "+7 (900) 123-45-67",
+                    "k": "RU", "r": "rare", "p": 230, "op": "mts"}
+            try:
+                db.create_player(uid)
+                db.add_number(uid, item)
+                player = db.player_dict(db.get_player(uid))
+
+                class Request:
+                    async def json(self):
+                        return {"number_id": item["id"], "price": 1_250_000, "kind": "sale"}
+
+                with patch.object(server, "_load_profile", return_value=(uid, player)), \
+                     patch.object(server, "maintenance_guard", return_value=None):
+                    response = await server.api_market_list(Request())
+
+                self.assertEqual(response.status, 200)
+                listing = db.market_listings(10)
+                self.assertEqual(len(listing), 1)
+                self.assertEqual(listing[0]["price"], 1_250_000)
+                self.assertEqual(db.get_number(item["id"])["status"], "market")
             finally:
                 if db._conn:
                     db._conn.close()

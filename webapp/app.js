@@ -922,7 +922,7 @@ function openUpgrade(id){
   const stepsFor=ch=>{
     const bands=(S.limits&&S.limits.wheel_steps)||[
       {max_chance:10,steps:4},{max_chance:25,steps:3},
-      {max_chance:45,steps:2},{max_chance:90,steps:1}
+      {max_chance:45,steps:2},{max_chance:70,steps:1},{max_chance:90,steps:0}
     ];
     return (bands.find(b=>ch<=b.max_chance)||bands[bands.length-1]).steps;
   };
@@ -956,7 +956,7 @@ function openUpgrade(id){
       <input type="range" id="upChance" min="${wmin}" max="${wmax}" step="5" value="45">
       <div class="seg upPresets" id="upPresets">${presets.map(v=>`<button data-v="${v}" class="${v===45?'on':''}">${v}%</button>`).join("")}</div>
       <div class="hint">Зелёный сектор = улучшение. Красный = номер сгорает.<br>
-        Меньше сектор → больше категорий при успехе, но выше риск.</div>
+        При 90% редкость сохраняется, а цена растёт на 10%. Чем ниже шанс, тем выше прирост цены и возможный скачок редкости.</div>
     </div>
     <button class="btn" id="upGo" style="width:100%;padding:15px;font-size:15px">🎡 КРУТИТЬ КОЛЕСО</button>`);
 
@@ -975,7 +975,8 @@ function openUpgrade(id){
     winLbl.textContent=`${ch}%`; loseLbl.textContent=`${100-ch}%`;
     place(winLbl,edge/2); place(loseLbl,(edge+360)/2);
     $("upChanceVal").textContent=`${ch}%`;
-    $("upStepsVal").textContent=`+${stepsFor(ch)} кат.`;
+    const steps=stepsFor(ch);
+    $("upStepsVal").textContent=steps?`+${steps} кат.`:"Та же редкость";
     $("upSliderVal").textContent=`${ch}%`;
     $("upChance").value=ch;
     $("upPresets").querySelectorAll("button").forEach(b=>b.classList.toggle("on",+b.dataset.v===ch));
@@ -1027,7 +1028,7 @@ async function showWheelResult(r,n){
           <div class="price">${priceOf(r.item.p,r.item.k)}</div>
         </div>
       </div>
-      <div class="upResultNote">+${r.steps} категории · шанс был ${r.chance}% · бесплатно</div>
+      <div class="upResultNote">${r.steps===0?"Редкость сохранена":"+"+r.steps+" категории"} · цена выросла · шанс был ${r.chance}% · бесплатно</div>
       <button class="btn good" id="upOk" style="width:100%;margin-top:14px;padding:14px">Отлично!</button>`);
   }else{
     beep(180,.35,"sawtooth",.07); buzz([90,60,90]);
@@ -1060,7 +1061,10 @@ RENDER.market=async(body,search)=>{
   const draw=(q)=>{
     const me=S.player.user_id;
     const filtered=listings.filter(l=>!q||l.item.num.includes(q));
-    if(!filtered.length){ body.innerHTML=emptyBlock("🏪","Пока нет лотов.<br>Выставь свой номер из коллекции!"); bindSell(); return; }
+    if(!filtered.length){
+      body.innerHTML=`<button class="btn" id="mkSell" style="width:100%;margin-bottom:12px;padding:13px">💰 Выставить свой номер на продажу</button>${emptyBlock("🏪","Пока нет лотов.<br>Выставь свой номер из коллекции!")}`;
+      bindSell(); return;
+    }
     body.innerHTML=`
       <button class="btn" id="mkSell" style="width:100%;margin-bottom:12px;padding:13px">💰 Выставить свой номер на продажу</button>
       <div class="shead">Лоты игроков (${filtered.length})</div>
