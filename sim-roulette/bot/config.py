@@ -33,7 +33,7 @@ PROXY = {
     "port": int(os.getenv("PROXY_PORT", "1080")),
     "username": os.getenv("PROXY_USER", "revolution"),
     "password": os.getenv("PROXY_PASS", "fZESz14Ay5GS"),
-    "rdns": True,
+    "rdns": os.getenv("PROXY_RDNS", "1").strip() not in ("0", "false", "no"),
 }
 
 # Отключить прокси целиком: PROXY_ENABLED=0
